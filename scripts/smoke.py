@@ -89,6 +89,7 @@ def main():
             process = start(jar, args.port, output)
             run_id, payload = create(base)
             pending = await_state(base, run_id, "WAITING_APPROVAL")
+            assert pending["reasonCode"] == "DEMO_RESTART_REQUIRES_APPROVAL"
             request(base, "POST", "/api/runs", payload, 409)
             first_pid = process.pid
             process.kill()
@@ -100,6 +101,7 @@ def main():
                     {"approvalId": pending["approvalId"], "decision": "APPROVE"}, 202)
             complete = await_state(base, run_id, "SUCCEEDED")
             assert complete["output"].startswith("SIMULATED_RESTART:orders")
+            assert complete["reasonCode"] == "DEMO_RESTART_REQUIRES_APPROVAL"
             request(base, "POST", "/api/runs", payload, 409)
             print(f"PASS restart recovery: {run_id}; Worker {first_pid} -> {process.pid}", flush=True)
 

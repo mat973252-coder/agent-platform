@@ -34,13 +34,15 @@ class RunApiTest {
     var created = create(requestId, "orders");
     assertEquals(202, created.statusCode());
     assertEquals("/api/runs/" + runId, created.headers().firstValue("Location").orElseThrow());
-    awaitState(runId, "WAITING_APPROVAL");
+    assertTrue(awaitState(runId, "WAITING_APPROVAL").body()
+        .contains("\"reasonCode\":\"DEMO_RESTART_REQUIRES_APPROVAL\""));
     assertEquals(409, create(requestId, "orders").statusCode());
     var approval = send("POST", "/api/runs/" + runId + "/approval",
         "{\"approvalId\":\"" + runId + ":approval:restart\",\"decision\":\"APPROVE\"}");
     assertEquals(202, approval.statusCode());
     var finished = awaitState(runId, "SUCCEEDED");
     assertTrue(finished.body().contains("SIMULATED_RESTART:orders"));
+    assertTrue(finished.body().contains("\"reasonCode\":\"DEMO_RESTART_REQUIRES_APPROVAL\""));
     assertEquals(409, create(requestId, "orders").statusCode(), "Closed IDs cannot be reused");
   }
 

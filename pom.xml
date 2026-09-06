@@ -20,9 +20,11 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <temporal.version>1.38.0</temporal.version>
+    <agentpermit.version>0.2.0</agentpermit.version>
   </properties>
   <modules>
     <module>agent-runtime-core</module>
+    <module>agentpermit-adapter</module>
     <module>durable-execution</module>
     <module>platform-api</module>
   </modules>
@@ -43,6 +45,11 @@
       <dependency>
         <groupId>${project.groupId}</groupId>
         <artifactId>durable-execution</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>${project.groupId}</groupId>
+        <artifactId>agentpermit-adapter</artifactId>
         <version>${project.version}</version>
       </dependency>
     </dependencies>

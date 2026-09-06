@@ -1,0 +1,38 @@
+package io.github.mat973252.agentplatform.permit;
+
+import io.github.mat973252.agentpermit.approval.InMemoryApprovalService;
+import io.github.mat973252.agentpermit.approval.InvocationFingerprinter;
+import io.github.mat973252.agentpermit.core.GateDecision;
+import io.github.mat973252.agentpermit.core.RiskAssessment;
+import io.github.mat973252.agentpermit.core.RiskLevel;
+import io.github.mat973252.agentpermit.execution.InMemoryResultIdempotencyGuard;
+import io.github.mat973252.agentpermit.execution.ResultDecisionPipeline;
+import io.github.mat973252.agentplatform.core.ActionResult;
+import java.time.Clock;
+import java.time.Duration;
+
+/** Local fixtures only: workflow decisions are not authenticated approval credentials. */
+public final class LocalDemoGovernance {
+  private static final System.Logger LOG = System.getLogger(LocalDemoGovernance.class.getName());
+  private final InMemoryResultIdempotencyGuard guard = new InMemoryResultIdempotencyGuard();
+
+  public ActionResult restart(String operationId, String service, String approvalId, boolean approved) {
+    // Reconstruct a short-lived demo approval from the Workflow's recorded decision after recovery.
+    // P1.2 must replace this with independently authenticated, durable approvals.
+    var approvals = new InMemoryApprovalService(Clock.systemUTC(), () -> approvalId, new InvocationFingerprinter());
+    if (approved) {
+      approvals.request(AgentPermitAdapter.restartInvocation(operationId, service), Duration.ofMinutes(1));
+      approvals.approve(approvalId);
+    }
+    var pipeline = new ResultDecisionPipeline(new ResultDecisionPipeline.Dependencies(
+        AgentPermitAdapter::validate, invocation -> invocation,
+        invocation -> new GateDecision(true, "LOCAL_DEMO_PRINCIPAL"),
+        invocation -> new RiskAssessment(RiskLevel.HIGH, "DEMO_RESTART_REQUIRES_APPROVAL"),
+        approvals, guard,
+        invocation -> "SIMULATED_RESTART:" + invocation.arguments().get("service")
+            + ";operationId=" + invocation.arguments().get("operationId"),
+        event -> LOG.log(System.Logger.Level.DEBUG, "AgentPermit {0}: {1}",
+            event.decision().outcome(), event.decision().reasonCode())));
+    return new AgentPermitAdapter(pipeline).restart(operationId, service, approved ? approvalId : null);
+  }
+}

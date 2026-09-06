@@ -5,6 +5,7 @@ public enum RunState {
   RUNNING,
   WAITING_APPROVAL,
   SUCCEEDED,
+  DENIED,
   REJECTED,
   TIMED_OUT,
   CANCELLED,

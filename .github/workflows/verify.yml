@@ -15,7 +15,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-          cache: maven
+      - name: Build locked AgentPermit dependency
+        run: python3 scripts/bootstrap-agentpermit.py
       - name: Build and test
         run: ./mvnw -B -ntp verify
       - name: Validate local deployment

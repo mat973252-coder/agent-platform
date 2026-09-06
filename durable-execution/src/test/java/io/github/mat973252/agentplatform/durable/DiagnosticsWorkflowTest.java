@@ -119,6 +119,50 @@ class DiagnosticsWorkflowTest {
     assertTrue(operations.operationIds.isEmpty());
   }
 
+  @Test
+  void allowedActionCompletesWithoutWaitingForApproval() {
+    operations.initialStatus = ActionStatus.EXECUTED;
+    assertEquals(RunState.SUCCEEDED, workflow.execute(new RunRequest("orders", 30)).state());
+    assertEquals(List.of(runId + ":restart:1"), operations.operationIds);
+  }
+
+  @Test
+  void policyDenialEndsWithoutWaitingOrExecuting() {
+    operations.initialStatus = ActionStatus.DENIED;
+    var result = workflow.execute(new RunRequest("orders", 30));
+    assertEquals(RunState.DENIED, result.state());
+    assertEquals("SYNTHETIC_DENIED", result.reasonCode());
+    assertTrue(operations.operationIds.isEmpty());
+  }
+
+  @Test
+  void pipelineFailureProducesAnExplicitTerminalReason() {
+    operations.initialStatus = ActionStatus.FAILED;
+    var result = workflow.execute(new RunRequest("orders", 30));
+    assertEquals(RunState.FAILED, result.state());
+    assertEquals("SYNTHETIC_FAILED", result.reasonCode());
+    assertNull(result.output());
+    assertTrue(operations.operationIds.isEmpty());
+  }
+
+  @Test
+  void authorizationIsRecheckedAfterTheWorkflowApproval() {
+    operations.approvedStatus = ActionStatus.DENIED;
+    decideAfter(Duration.ofSeconds(1), ApprovalDecision.APPROVE);
+    assertEquals(RunState.DENIED, workflow.execute(new RunRequest("orders", 30)).state());
+    assertTrue(operations.operationIds.isEmpty());
+  }
+
+  @Test
+  void unusableApprovalFailsWithoutAnAutomaticApprovalLoop() {
+    operations.approvedStatus = ActionStatus.APPROVAL_REQUIRED;
+    decideAfter(Duration.ofSeconds(1), ApprovalDecision.APPROVE);
+    var result = workflow.execute(new RunRequest("orders", 30));
+    assertEquals(RunState.FAILED, result.state());
+    assertEquals("SYNTHETIC_APPROVAL_REQUIRED", result.reasonCode());
+    assertTrue(operations.operationIds.isEmpty());
+  }
+
   private void decideAfter(Duration delay, ApprovalDecision decision) {
     environment.registerDelayedCallback(delay, () -> {
       assertEquals(RunState.WAITING_APPROVAL, workflow.snapshot().state());
@@ -131,6 +175,8 @@ class DiagnosticsWorkflowTest {
     int readFailures;
     int readAttempts;
     int toolFailures;
+    ActionStatus initialStatus = ActionStatus.APPROVAL_REQUIRED;
+    ActionStatus approvedStatus = ActionStatus.EXECUTED;
     final List<String> operationIds = new ArrayList<>();
 
     @Override
@@ -148,6 +194,13 @@ class DiagnosticsWorkflowTest {
         throw ApplicationFailure.newFailure("Synthetic failure before side effect", "DEMO_TOOL_FAILURE");
       }
       return "SIMULATED_RESTART:" + service;
+    }
+
+    @Override
+    public ActionResult attemptAction(String operationId, String service, String approvalId, boolean approved) {
+      var status = approved ? approvedStatus : initialStatus;
+      return new ActionResult(status, "SYNTHETIC_" + status,
+          status == ActionStatus.EXECUTED ? executeAction(operationId, service) : null);
     }
   }
 }

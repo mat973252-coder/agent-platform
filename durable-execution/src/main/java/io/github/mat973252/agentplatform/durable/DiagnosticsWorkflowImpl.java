@@ -1,5 +1,7 @@
 package io.github.mat973252.agentplatform.durable;
 
+import io.github.mat973252.agentplatform.core.ActionResult;
+import io.github.mat973252.agentplatform.core.ActionStatus;
 import io.github.mat973252.agentplatform.core.ApprovalCommand;
 import io.github.mat973252.agentplatform.core.ApprovalDecision;
 import io.github.mat973252.agentplatform.core.RunRequest;
@@ -32,6 +34,7 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
   private String operationId;
   private String evidence;
   private String output;
+  private String reasonCode;
   private ApprovalDecision decision;
 
   @Override
@@ -54,6 +57,14 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
   private RunSnapshot executeSteps() {
     state = RunState.RUNNING;
     evidence = activities.readEvidence(request.service());
+    int version = Workflow.getVersion("agentpermit-action-v1", Workflow.DEFAULT_VERSION, 1);
+    if (version != Workflow.DEFAULT_VERSION) {
+      var action = activities.attemptAction(operationId, request.service(), approvalId, false);
+      reasonCode = action.reasonCode();
+      if (action.status() != ActionStatus.APPROVAL_REQUIRED) {
+        return finishAction(action);
+      }
+    }
     state = RunState.WAITING_APPROVAL;
     boolean received = Workflow.await(
         Duration.ofSeconds(request.approvalTimeoutSeconds()), () -> decision != null);
@@ -63,9 +74,24 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
       state = RunState.REJECTED;
     } else {
       state = RunState.RUNNING;
-      output = activities.executeAction(operationId, request.service());
-      state = RunState.SUCCEEDED;
+      if (version == Workflow.DEFAULT_VERSION) {
+        output = activities.executeAction(operationId, request.service());
+        state = RunState.SUCCEEDED;
+      } else {
+        return finishAction(activities.attemptAction(operationId, request.service(), approvalId, true));
+      }
     }
+    return snapshot();
+  }
+
+  private RunSnapshot finishAction(ActionResult action) {
+    reasonCode = action.reasonCode();
+    output = action.output();
+    state = switch (action.status()) {
+      case EXECUTED -> RunState.SUCCEEDED;
+      case DENIED -> RunState.DENIED;
+      case FAILED, APPROVAL_REQUIRED -> RunState.FAILED;
+    };
     return snapshot();
   }
 
@@ -80,6 +106,6 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
   @Override
   public RunSnapshot snapshot() {
     return new RunSnapshot(runId, state, request == null ? null : request.service(),
-        approvalId, operationId, evidence, output);
+        approvalId, operationId, evidence, output, reasonCode);
   }
 }

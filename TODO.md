@@ -1,6 +1,6 @@
 # Agent Platform 实施清单
 
-> 状态日期：2026-09-06。当前目标是持久化执行项目的首个可运行骨架。
+> 状态日期：2026-09-07。P0 已交付，本轮推进 P1.1 治理适配；P1.2/P1.3 保留独立验收。
 > 技术栈：Java 21、Spring Boot 4、Temporal Java SDK、PostgreSQL。
 > 原始完整平台规划保留在 `production-agent-platform-tech-stack-and-core-features.md`；本清单决定实际执行顺序。
 
@@ -25,7 +25,7 @@
 - [x] 配置编码、换行、忽略规则，避免产物、凭据和本机配置进入仓库。
 - [x] GitHub Actions 执行 Maven `verify`，校验 Compose 配置。
 
-验收：新环境只需 JDK 21 和网络即可运行 Wrapper 完成验证；构建不依赖本机其他项目或未发布 SNAPSHOT。
+验收：新环境使用 JDK 21、Python 3.9+ 和网络，先构建锁定的 AgentPermit 源码，再运行 Wrapper 验证；不依赖本机其他项目、用户全局 Maven 缓存或未发布 SNAPSHOT。
 
 ### P0.2 首个持久工作流
 
@@ -64,13 +64,15 @@
 
 ### P1.1 依赖和适配边界
 
-- [ ] 确定可复现的 AgentPermit4j 依赖来源：正式发布版本或固定提交构建，禁止隐式依赖某台机器的 Maven 缓存。
-- [ ] 新增专用适配模块，Runtime core 保持不依赖 AgentPermit、Temporal 或 Spring。
-- [ ] Tool Activity 的实际副作用全部通过 AgentPermit 管线执行。
-- [ ] 将 ALLOW、DENY、REQUIRE_APPROVAL、FAILED 映射为明确工作流分支。
-- [ ] 主体、租户、环境、工具定义和资源范围来自可信服务端上下文。
+- [x] 确定可复现的 AgentPermit4j 依赖来源：固定公开提交、归档 SHA-256 校验、项目隔离 Maven 仓库，禁止隐式依赖某台机器的 Maven 缓存。
+- [x] 新增专用适配模块，Runtime core 保持不依赖 AgentPermit、Temporal 或 Spring。
+- [x] 重启 Tool Activity 的执行全部通过 AgentPermit 管线，包括旧历史的兼容 Activity；当前工具仍为模拟操作。
+- [x] 将 ALLOW、DENY、REQUIRE_APPROVAL、FAILED 映射为明确工作流分支。
+- [x] 主体、租户、环境、工具定义和资源范围由服务端固定演示上下文构造，不接收调用方声明的授权上下文。
 
 验收：用同一工具的允许、拒绝、待审批三种 fixture 证明调用没有绕过 AgentPermit；拒绝路径副作用为零。
+
+当前边界：已接入真实 AgentPermit 管线和指纹校验。`LocalDemoGovernance` 根据 Workflow 的流程决定重建短期内存审批，幂等 guard 也仅在进程内生效。这不是生产身份或持久审批实现，不计为 P1.2/P1.3 完成。
 
 ### P1.2 审批契约
 
@@ -145,7 +147,7 @@
 
 验收：各模块以具体场景和故障验收进入主线，不以空目录或配置清单计为完成。
 
-## 本轮验证记录
+## P0 验证记录（2026-09-06）
 
 - 本地 `mvnw.cmd -B -ntp verify`：22 项测试通过（领域 8、工作流 9、HTTP API 5）。工作流测试使用内存 Temporal 服务；包含 Activity 重试和执行历史回放。
 - `docker compose config --quiet` 与 `scripts/smoke.py` Python 语法检查通过。
@@ -154,3 +156,12 @@
 - 恢复证据：`run-817bb01b-f20b-4af5-9c64-228db432bbd0` 在等待审批期间强制结束 Worker，进程 PID `3818 → 3940` 后查询快照一致；批准后完成模拟执行。拒绝、取消、审批超时和重复 Run 保护检查通过。
 - 首轮 CI 暴露 Temporal 镜像要求动态配置文件存在的问题；已补齐文件和只读挂载，并由上述 CI 验证修复。
 - 本机 Docker Desktop 引擎启动失败，因此本地容器联调尚未完成；真实容器恢复证据来自 GitHub CI，未将内存测试计为跨进程恢复。
+
+## P1.1 验证记录（2026-09-07）
+
+- 先补适配层与新增工作流分支测试，观察缺少适配类/结果类型/Activity 契约的预期编译失败，再实现对应代码。
+- `python scripts/bootstrap-agentpermit.py`：从公开提交 `c33911c595e5718b144d2bdb939bb3e23e17c909` 构建 AgentPermit `0.2.0`，校验归档 SHA-256；上游所需模块的 113 项测试通过。
+- `mvnw.cmd -B -ntp verify`：37 项项目测试通过（core 8、adapter 8、workflow 14、旧历史回放 2、HTTP API 5）。
+- 旧历史样本取自 P0 提交 `2dc4cc3`，分别覆盖等待审批和已批准完成；保留原 Workflow ID 验证回放，Activity 不被重新执行。
+- CI 已增加固定依赖构建；更新后的 smoke 检查治理原因码与 Worker 重启恢复。GitHub 最新提交的真实容器验收结果将在执行后补充。
+- 本机 Docker 引擎仍不可用，未宣称已完成本地容器联调。P1.2 可信持久审批、P1.3 跨进程副作用幂等与未知结果处理仍未完成。

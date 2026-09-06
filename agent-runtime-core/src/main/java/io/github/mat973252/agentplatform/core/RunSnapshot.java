@@ -7,4 +7,5 @@ public record RunSnapshot(
     String approvalId,
     String operationId,
     String evidence,
-    String output) {}
+    String output,
+    String reasonCode) {}
