@@ -38,6 +38,8 @@ services:
       POSTGRES_PWD: temporal-local-demo
       POSTGRES_SEEDS: postgresql
       BIND_ON_IP: 0.0.0.0
+    volumes:
+      - ./deploy/dynamicconfig.yaml:/etc/temporal/config/dynamicconfig/docker.yaml:ro
     ports:
       - "127.0.0.1:7233:7233"
     healthcheck:

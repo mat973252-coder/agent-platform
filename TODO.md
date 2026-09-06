@@ -23,7 +23,7 @@
 - [x] 建立 `agent-runtime-core`、`durable-execution`、`platform-api` 三个实际使用的模块。
 - [x] 加入 README、架构文档、贡献规范、许可证和本地启动说明。
 - [x] 配置编码、换行、忽略规则，避免产物、凭据和本机配置进入仓库。
-- [ ] GitHub Actions 执行 Maven `verify`，校验 Compose 配置。
+- [x] GitHub Actions 执行 Maven `verify`，校验 Compose 配置。
 
 验收：新环境只需 JDK 21 和网络即可运行 Wrapper 完成验证；构建不依赖本机其他项目或未发布 SNAPSHOT。
 
@@ -55,7 +55,7 @@
 
 - [x] 本地 Maven `verify`、`git diff --check`、Compose 配置检查通过。
 - [x] 检查待提交内容，无凭据、私有业务数据、构建产物或本机绝对路径。
-- [ ] 创建 GitHub `agent-platform` 仓库，推送 `main`。
+- [x] 创建 GitHub `agent-platform` 仓库，推送 `main`。
 - [ ] 核对远端提交与本地提交一致。
 - [ ] 核对首个 GitHub Actions 结果并修复本轮问题。
 - [ ] 更新本清单和 README 的实际能力及验证记录。

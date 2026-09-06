@@ -1,0 +1,2 @@
+# Keep server defaults; Temporal requires this dynamic configuration file to exist.
+{}
