@@ -88,6 +88,8 @@ python scripts/smoke.py
 
 2026-09-06 已在 [GitHub CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34025622000) 通过 PostgreSQL + Temporal 的 Worker 强制终止/恢复验收，并验证拒绝、取消、超时和重复请求保护。本机 Windows 的 Docker 引擎启动故障使本地容器联调尚未完成；Windows 本地 Maven 测试已通过。
 
+2026-09-07 的 [P1.1 CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34049953194) 已验证全新环境构建固定 AgentPermit 源码，并再次通过治理接入后的相同恢复验收。
+
 ## 当前保证与限制
 
 - Temporal 恢复已记录的执行结果；Activity 在完成结果尚未上报时仍可能重试。

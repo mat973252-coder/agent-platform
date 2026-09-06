@@ -163,5 +163,5 @@
 - `python scripts/bootstrap-agentpermit.py`：从公开提交 `c33911c595e5718b144d2bdb939bb3e23e17c909` 构建 AgentPermit `0.2.0`，校验归档 SHA-256；上游所需模块的 113 项测试通过。
 - `mvnw.cmd -B -ntp verify`：37 项项目测试通过（core 8、adapter 8、workflow 14、旧历史回放 2、HTTP API 5）。
 - 旧历史样本取自 P0 提交 `2dc4cc3`，分别覆盖等待审批和已批准完成；保留原 Workflow ID 验证回放，Activity 不被重新执行。
-- CI 已增加固定依赖构建；更新后的 smoke 检查治理原因码与 Worker 重启恢复。GitHub 最新提交的真实容器验收结果将在执行后补充。
+- [P1.1 GitHub CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34049953194) 全部通过，验收提交为 `f71b603e4969a752a2d3fac8f404fff7b2c775e9`。全新 Linux 环境从锁定源码构建依赖，完成上游测试、项目 37 项测试、Compose、PostgreSQL + Temporal 启动，以及带治理原因码的 Worker 强制退出/恢复 smoke；拒绝、取消、超时与重复请求检查通过。
 - 本机 Docker 引擎仍不可用，未宣称已完成本地容器联调。P1.2 可信持久审批、P1.3 跨进程副作用幂等与未知结果处理仍未完成。
