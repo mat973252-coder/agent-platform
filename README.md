@@ -1,5 +1,7 @@
 # Agent Platform
 
+[![verify](https://github.com/mat973252-coder/agent-platform/actions/workflows/verify.yml/badge.svg)](https://github.com/mat973252-coder/agent-platform/actions/workflows/verify.yml)
+
 Java + Temporal 的持久化 Agent 执行基础项目。
 
 **当前阶段：可运行骨架。** 提供固定诊断工作流、本机 REST API、审批等待、拒绝、超时、取消、有限重试和执行状态查询。工具使用合成数据与模拟操作，尚未接入真实模型、AgentPermit4j 或真实写工具。
@@ -23,7 +25,7 @@ Java + Temporal 的持久化 Agent 执行基础项目。
 
 Linux/macOS：`./mvnw -B -ntp verify`。
 
-测试包括领域校验、工作流分支、Activity 重试、稳定操作 ID、历史回放和真实 HTTP 请求；测试中的 Temporal 使用内存测试服务。
+22 项测试包括领域校验、工作流分支、Activity 重试、稳定操作 ID、历史回放和真实 HTTP 请求；测试中的 Temporal 使用内存测试服务。
 
 ## 本地启动
 
@@ -77,6 +79,8 @@ python scripts/smoke.py
 ```
 
 日志写入忽略的 `var/smoke.log`。此验收与内存工作流测试分开，GitHub Actions 也会运行它。实际执行记录见 TODO。
+
+2026-09-06 已在 [GitHub CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34025622000) 通过 PostgreSQL + Temporal 的 Worker 强制终止/恢复验收，并验证拒绝、取消、超时和重复请求保护。本机 Windows 的 Docker 引擎启动故障使本地容器联调尚未完成；Windows 本地 Maven 测试已通过。
 
 ## 当前保证与限制
 

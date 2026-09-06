@@ -44,10 +44,10 @@
 - [x] 提供创建 Run、查询 Run、提交审批、取消 Run 的 REST API。
 - [x] 输入校验、重复 Run ID、未知 Run、无效审批状态返回明确 HTTP 状态。
 - [x] 创建请求使用调用方稳定 request ID；重复创建不启动第二个工作流。
-- [ ] 提供 PostgreSQL 持久存储的 Temporal 本地 Compose 配置及 Temporal UI。
+- [x] 提供 PostgreSQL 持久存储的 Temporal 本地 Compose 配置及 Temporal UI。
 - [x] 提供 API 操作示例和兼容 Windows/Linux 的 Python smoke 脚本。
-- [ ] 实际验证 API 与工作流连接，区分内存测试与真实 Temporal 联调证据。
-- [ ] 实际验证 Worker 在等待审批时停止、重启后恢复同一个 Run。
+- [x] 实际验证 API 与工作流连接，区分内存测试与真实 Temporal 联调证据。
+- [x] 实际验证 Worker 在等待审批时停止、重启后恢复同一个 Run。
 
 验收：能按 README 启动并提交任务；批准、拒绝、取消的结果能被查询；重启验收使用持久 Temporal 服务，不把内存测试冒充跨进程恢复。
 
@@ -56,9 +56,9 @@
 - [x] 本地 Maven `verify`、`git diff --check`、Compose 配置检查通过。
 - [x] 检查待提交内容，无凭据、私有业务数据、构建产物或本机绝对路径。
 - [x] 创建 GitHub `agent-platform` 仓库，推送 `main`。
-- [ ] 核对远端提交与本地提交一致。
-- [ ] 核对首个 GitHub Actions 结果并修复本轮问题。
-- [ ] 更新本清单和 README 的实际能力及验证记录。
+- [x] 核对远端提交与本地提交一致。
+- [x] 核对首个 GitHub Actions 结果并修复本轮问题。
+- [x] 更新本清单和 README 的实际能力及验证记录。
 
 ## P1：AgentPermit4j 正式接入与工具副作用
 
@@ -149,4 +149,8 @@
 
 - 本地 `mvnw.cmd -B -ntp verify`：22 项测试通过（领域 8、工作流 9、HTTP API 5）。工作流测试使用内存 Temporal 服务；包含 Activity 重试和执行历史回放。
 - `docker compose config --quiet` 与 `scripts/smoke.py` Python 语法检查通过。
-- 跨进程恢复：脚本和 CI 已配置，待 GitHub Actions 的外部 Temporal 实测后更新。本机 Docker Desktop 引擎启动失败，因此尚未取得本地容器恢复证据。
+- [GitHub 仓库](https://github.com/mat973252-coder/agent-platform) 已创建并推送 `main`；功能与部署修复提交为 `4fb211cd8248b514f33600ae004c1534eb4652b3`，已核对与远端一致。
+- [GitHub Actions 验收](https://github.com/mat973252-coder/agent-platform/actions/runs/34025622000)：Ubuntu / JDK 21 下 Maven 22 项测试、Compose 校验、PostgreSQL + Temporal 启动与跨进程 smoke 全部通过。
+- 恢复证据：`run-817bb01b-f20b-4af5-9c64-228db432bbd0` 在等待审批期间强制结束 Worker，进程 PID `3818 → 3940` 后查询快照一致；批准后完成模拟执行。拒绝、取消、审批超时和重复 Run 保护检查通过。
+- 首轮 CI 暴露 Temporal 镜像要求动态配置文件存在的问题；已补齐文件和只读挂载，并由上述 CI 验证修复。
+- 本机 Docker Desktop 引擎启动失败，因此本地容器联调尚未完成；真实容器恢复证据来自 GitHub CI，未将内存测试计为跨进程恢复。
