@@ -127,6 +127,8 @@ python scripts/smoke.py --restart-approval-db
 
 同日的 [P1.3 CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34238414365) 已通过 72 项项目测试及上游 113 项测试，并实际验证账本提交后终止 Worker、新进程在另一端口恢复同一结果且仅一次写入，以及未知任务跨重启后的人工留痕关闭。当前 P1.3 验收范围为受控数据库账本。
 
+[P2 首批 CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34245518880) 已通过 94 项项目测试与上游 113 项测试，并验证已记录的离线规划决策跨 Worker 恢复、批准后完整完成规划/执行/核验循环，以及账本提交后中断仍只写一次。真实模型与完整预算尚未接入。
+
 ## 当前保证与限制
 
 - Temporal 恢复已记录的执行结果；Activity 在完成结果尚未上报时仍可能重试。

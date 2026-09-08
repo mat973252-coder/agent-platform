@@ -1,6 +1,6 @@
 # Agent Platform 实施清单
 
-> 状态日期：2026-09-08。P0、P1.1、P1.2、P1.3 已交付。P2 首批决策契约与离线 Agent 循环已实现、本地 94 项测试通过，跨进程联调待本轮 CI 验收；真实模型与完整预算尚未实现。
+> 状态日期：2026-09-08。P0、P1.1、P1.2、P1.3 已交付。P2 首批决策契约与离线 Agent 循环已交付，本地 94 项测试及真实跨进程 CI 通过；下一步补完整时间/token/cost 预算，再接真实模型。
 > 技术栈：Java 21、Spring Boot 4、Temporal Java SDK、PostgreSQL。
 > 原始完整平台规划保留在 `production-agent-platform-tech-stack-and-core-features.md`；本清单决定实际执行顺序。
 
@@ -119,7 +119,9 @@ P1.3 真实联调（2026-09-08）：[GitHub CI](https://github.com/mat973252-cod
 
 P2 首批范围：模型可补查证据、申请一次受审批的 orders 重启、核验账本或结束诊断；未知写阻塞后续规划，不允许第二次写或跳过核验宣称成功。当前只有 6 次模型决策上限和各 Activity 的有限重试，完整总时间、token/cost 预算仍未完成。默认 fixture 不调用真实 LLM；Spring AI 接入留在后续。
 
-本地验证（2026-09-08）：Maven `verify` 94 项通过（core 10、adapter 28、Workflow 30、固定旧历史 9、API/fixture/解析/投递 17）。覆盖非法模型输出、稳定决策 ID、模型重试耗尽、证据与核验读取失败后重新规划、步数上限、拒绝第二次写、拒绝未经核验的成功声明、未知结果阻塞、以及回放不调用模型/工具。Temporal 为内存服务、业务库为 H2；真实进程恢复待本轮 CI。
+本地验证（2026-09-08）：Maven `verify` 94 项通过（core 10、adapter 28、Workflow 30、固定旧历史 9、API/fixture/解析/投递 17）。覆盖非法模型输出、稳定决策 ID、模型重试耗尽、证据与核验读取失败后重新规划、步数上限、拒绝第二次写、拒绝未经核验的成功声明、未知结果阻塞、以及回放不调用模型/工具。Temporal 为内存服务、业务库为 H2；Python smoke 语法、打包 JSON 语法和 `git diff --check` 通过。
+
+真实联调（2026-09-08）：[P2 首批 GitHub CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34245518880) 对功能提交 `53b193130e82e17ae871259cbabe081b0df1746e` 的上游 113 项、项目 94 项测试及全部 smoke 通过。等待审批的 `run-b9b1e49e-2710-4d9c-a698-8ba6ec300074` 在 Worker `5215 → 6065` 和审批 PostgreSQL 重启后保持已记录决策；批准后完成三步模型决策及账本核验。账本提交后中断的 `run-0389949b-41fd-401e-b77b-7972c1a0b852` 由 Worker `6380 → 6620`、端口 `9091 → 9092` 恢复，只有一次账本写入，随后完成核验和结论；未知任务人工留痕关闭及原有拒绝/取消/超时检查也通过。此证据仍使用离线模型和测试账本，不是生产模型或真实服务联调。
 
 ## P3：平台数据与可观测性
 
