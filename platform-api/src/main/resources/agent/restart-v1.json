@@ -1,0 +1,1 @@
+{"schemaVersion":"1","action":"CALL_TOOL","tool":"ops.restart","arguments":{"service":"orders"},"message":"Offline fixture: request the fixed runbook restart through approval."}

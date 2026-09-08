@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Offline diagnostic decision v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "action", "tool", "arguments", "message"],
+  "properties": {
+    "schemaVersion": {"const": "1"},
+    "action": {"enum": ["CALL_TOOL", "FINISH", "NEED_CONTEXT"]},
+    "tool": {"enum": ["evidence.read", "ops.restart", "ops.verify", null]},
+    "arguments": {"type": "object"},
+    "message": {"type": "string", "minLength": 1, "maxLength": 2000, "pattern": "\\S"}
+  },
+  "oneOf": [
+    {"properties": {
+      "action": {"const": "CALL_TOOL"},
+      "tool": {"enum": ["evidence.read", "ops.restart", "ops.verify"]},
+      "arguments": {"type": "object", "required": ["service"], "additionalProperties": false,
+        "properties": {"service": {"const": "orders"}}}
+    }},
+    {"properties": {
+      "action": {"enum": ["FINISH", "NEED_CONTEXT"]},
+      "tool": {"type": "null"},
+      "arguments": {"type": "object", "maxProperties": 0}
+    }}
+  ]
+}

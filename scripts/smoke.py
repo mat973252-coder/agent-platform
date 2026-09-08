@@ -43,6 +43,15 @@ def await_state(base, run_id, state):
     raise AssertionError(f"Expected {state}, got {latest}")
 
 
+def assert_agent_complete(snapshot):
+    agent = snapshot["agent"]
+    assert agent["modelSteps"] == 3
+    assert agent["modelVersion"] == "offline-diagnostics-v1"
+    assert agent["lastDecision"]["action"] == "FINISH"
+    assert agent["observation"].startswith("VERIFICATION_CONFIRMED")
+    assert "No real service" in agent["conclusion"]
+
+
 def start(jar, port, output, delivery=True, failure_mode="NONE"):
     process = subprocess.Popen(
         ["java", "-jar", str(jar), f"--server.port={port}",
@@ -106,6 +115,8 @@ def main():
             run_id, payload = create(base)
             pending = await_state(base, run_id, "WAITING_APPROVAL")
             assert pending["reasonCode"] == "DEMO_RESTART_REQUIRES_APPROVAL"
+            assert pending["agent"]["modelSteps"] == 1
+            assert pending["agent"]["lastDecision"]["tool"] == "ops.restart"
             approval_path = f"/api/runs/{run_id}/approval"
             original_record = request(base, "GET", approval_path)
             assert original_record["status"] == "PENDING"
@@ -131,6 +142,7 @@ def main():
                 subprocess.run(["docker", "compose", "up", "-d", "--wait", "approval-db"], cwd=root, check=True)
             process = start(jar, args.port, output)
             complete = await_state(base, run_id, "SUCCEEDED")
+            assert_agent_complete(complete)
             assert complete["output"].startswith("TEST_LEDGER_RESTART:orders")
             assert complete["reasonCode"] == "DEMO_RESTART_REQUIRES_APPROVAL"
             completed_record = request(base, "GET", approval_path)
@@ -179,6 +191,7 @@ def main():
             process = start(jar, args.port + 1, output)
             base = f"http://127.0.0.1:{args.port + 1}"
             complete = await_state(base, interrupted, "SUCCEEDED")
+            assert_agent_complete(complete)
             recovered = request(base, "GET", operation_path)
             assert recovered["receipt"] == operation["receipt"]
             assert recovered["execution"]["output"] == complete["output"]
@@ -210,6 +223,7 @@ def main():
             assert closed["receipt"] is None and closed["serviceGeneration"] == generation
             assert closed["execution"]["closedBy"] == "operator"
             print("PASS unknown outcome survives restart; manual audited closure without re-execution", flush=True)
+            print("PASS offline plan/execute/verify loop and recorded decision survive Worker restarts", flush=True)
         finally:
             if process is not None and process.poll() is None:
                 process.terminate()

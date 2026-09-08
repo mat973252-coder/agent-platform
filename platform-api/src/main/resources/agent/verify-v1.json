@@ -1,0 +1,1 @@
+{"schemaVersion":"1","action":"CALL_TOOL","tool":"ops.verify","arguments":{"service":"orders"},"message":"Offline fixture: verify the committed test ledger receipt."}

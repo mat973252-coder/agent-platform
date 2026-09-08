@@ -1,6 +1,6 @@
 # Agent Platform 实施清单
 
-> 状态日期：2026-09-08。P0、P1.1、P1.2、P1.3 已交付；本地 72 项测试和真实 PostgreSQL 进程中断联调 CI 通过。下一阶段为 P2 真实 Agent 执行循环。
+> 状态日期：2026-09-08。P0、P1.1、P1.2、P1.3 已交付。P2 首批决策契约与离线 Agent 循环已实现、本地 94 项测试通过，跨进程联调待本轮 CI 验收；真实模型与完整预算尚未实现。
 > 技术栈：Java 21、Spring Boot 4、Temporal Java SDK、PostgreSQL。
 > 原始完整平台规划保留在 `production-agent-platform-tech-stack-and-core-features.md`；本清单决定实际执行顺序。
 
@@ -107,15 +107,19 @@ P1.3 真实联调（2026-09-08）：[GitHub CI](https://github.com/mat973252-cod
 ## P2：真实 Agent 执行循环
 
 - [ ] 用独立模型 Activity 调用 Spring AI，Workflow 内不直接执行模型或网络请求。
-- [ ] 模型输出使用明确 schema，工具名与参数必须经过服务端校验。
-- [ ] 区分模型错误、工具错误、策略拒绝、上下文不足和预算耗尽。
-- [ ] 实现有限步骤的 plan/execute/verify 循环，固定模型/提示词/工具版本。
+- [x] 模型输出使用明确 schema，工具名与参数必须经过服务端校验；本轮输出来自离线 JSON fixture。
+- [x] 区分模型错误、工具读取错误、策略拒绝、上下文不足、核验未确认和步数耗尽；写结果未知继续走 P1.3 核验。
+- [x] 实现有限步骤的 plan/execute/verify 循环，固定模型/提示词/工具/runbook 版本；当前为离线 fixture。
 - [ ] 增加最大步骤数、总时间、token/cost 预算；重试计入预算。
-- [ ] 保存执行所需模型结果或持久引用，使历史恢复使用既有结果。
-- [ ] 避免把整段黑盒 Agent 循环放入单一重试 Activity。
-- [ ] 检索/上下文先使用固定 runbook；有真实需要再接向量库和 compaction。
+- [x] 已上报的模型 Activity 结果随 Temporal 历史保存，回放使用既有结果；未上报请求仍可能再次调用。
+- [x] 模型规划、证据读取、写工具和只读核验分属独立 Activity，不把循环整体重试。
+- [x] 检索/上下文先使用固定 runbook；向量库和 compaction 暂不接入。
 
 验收：离线模型 fixture 覆盖成功、非法工具、超预算和失败后重新规划；真实模型联调单独记录，CI 不依赖付费 API。
+
+P2 首批范围：模型可补查证据、申请一次受审批的 orders 重启、核验账本或结束诊断；未知写阻塞后续规划，不允许第二次写或跳过核验宣称成功。当前只有 6 次模型决策上限和各 Activity 的有限重试，完整总时间、token/cost 预算仍未完成。默认 fixture 不调用真实 LLM；Spring AI 接入留在后续。
+
+本地验证（2026-09-08）：Maven `verify` 94 项通过（core 10、adapter 28、Workflow 30、固定旧历史 9、API/fixture/解析/投递 17）。覆盖非法模型输出、稳定决策 ID、模型重试耗尽、证据与核验读取失败后重新规划、步数上限、拒绝第二次写、拒绝未经核验的成功声明、未知结果阻塞、以及回放不调用模型/工具。Temporal 为内存服务、业务库为 H2；真实进程恢复待本轮 CI。
 
 ## P3：平台数据与可观测性
 

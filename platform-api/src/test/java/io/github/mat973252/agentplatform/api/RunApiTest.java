@@ -54,6 +54,10 @@ class RunApiTest {
     var finished = awaitState(runId, "SUCCEEDED");
     assertTrue(finished.body().contains("TEST_LEDGER_RESTART:orders"));
     assertTrue(finished.body().contains("\"reasonCode\":\"DEMO_RESTART_REQUIRES_APPROVAL\""));
+    assertTrue(finished.body().contains("\"modelSteps\":3"));
+    assertTrue(finished.body().contains("\"modelVersion\":\"offline-diagnostics-v1\""));
+    assertTrue(finished.body().contains("VERIFICATION_CONFIRMED"));
+    assertTrue(finished.body().contains("No real service was restarted or health-checked"));
     assertEquals(409, create(requestId, "orders").statusCode(), "Closed IDs cannot be reused");
   }
 

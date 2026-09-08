@@ -13,3 +13,5 @@ CI 使用临时数据库口令，并执行 `python scripts/smoke.py --restart-ap
 smoke 需要相邻两个空闲端口，验证账本提交后强制终止 Worker、跨进程结果恢复及未知任务人工关闭。`platform.demo.failure-mode` 仅用于服务启动时注入测试故障，默认 `NONE`；不得作为业务 API 参数暴露。
 
 PR 描述包含具体行为、验收结果与尚未覆盖的边界。不得提交凭据、真实业务数据或日志。
+
+离线 Agent 的 schema、严格解析器和 fixture 必须保持一致。修改模型、提示词、工具或 runbook 时显式升级版本；历史保留期内保留旧版本所需的 Activity/资源，不能在同一版本下静默换内容。CI 不调用付费模型 API。

@@ -9,7 +9,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 class LegacyHistoryReplayTest {
   @ParameterizedTest
   @ValueSource(strings = {"p0-waiting.json", "p0-approved.json", "p1-waiting.json", "p1-approved.json",
-      "p12-waiting.json", "p12-approved.json"})
+      "p12-waiting.json", "p12-approved.json", "p13-waiting.json", "p13-approved.json", "p13-unknown.json"})
   void oldHistoriesRemainReplayable(String fixture) throws Exception {
     try (var stream = getClass().getResourceAsStream("/history/" + fixture)) {
       var history = WorkflowExecutionHistory.fromJson(

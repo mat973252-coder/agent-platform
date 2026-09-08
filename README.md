@@ -4,16 +4,16 @@
 
 Java + Temporal 的持久化 Agent 执行基础项目。
 
-**当前阶段：P1.3 持久执行结果与未知结果处理，验收记录见 TODO。** 固定诊断工作流通过真实 AgentPermit4j 管线，审批与执行记录保存在独立 PostgreSQL。受控下游将每次逻辑操作写入数据库测试账本，支持跨 Worker 结果复用和只读核对；它不重启真实服务。尚未接入真实模型、生产业务工具或生产身份系统。
+**当前阶段：P2 首批离线 Agent 循环，验收记录见 TODO。** 新 Run 使用固定 runbook 和模型 fixture，执行有限的“规划 → 工具 → 核验 → 结论”循环。重启仍通过真实 AgentPermit4j 管线、持久审批和数据库测试账本；它不重启真实服务。尚未接入真实模型、完整 token/费用预算、生产业务工具或生产身份系统。
 
 ## 技术与结构
 
 - Java 21、Spring Boot 4.0.8、Temporal Java SDK 1.38.0。
 - 本地 Temporal Server 1.31.0 使用 PostgreSQL 16 持久存储，Temporal UI 2.49.1。
 - `agent-runtime-core`：纯 Java 领域数据。
-- `durable-execution`：Workflow 与 Activity 契约。
+- `durable-execution`：确定性 Agent 循环、Workflow 与独立规划/工具 Activity 契约。
 - `agentpermit-adapter`：可信调用构造、AgentPermit 决策映射及 JDBC 审批存储。
-- `platform-api`：Spring Boot API、Worker 与模拟工具。
+- `platform-api`：Spring Boot API、Worker、严格模型输出解析、离线 fixture 与受控账本工具。
 - [详细 TODO](TODO.md)、[架构边界](docs/architecture.md)、[完整平台规划](production-agent-platform-tech-stack-and-core-features.md)。
 
 ## 构建与测试
@@ -30,6 +30,8 @@ Linux/macOS：先运行 `python3 scripts/bootstrap-agentpermit.py`，再运行 `
 依赖锁定在 [`.mvn/agentpermit.lock.json`](.mvn/agentpermit.lock.json)：公开提交 `c33911c595e5718b144d2bdb939bb3e23e17c909`、版本 `0.2.0`，下载后校验 SHA-256。脚本构建必要模块并运行其测试；主项目使用 `var/maven-repository` 隔离仓库，不依赖其他 checkout 或用户全局 Maven 缓存。锁定更新后重新运行脚本；不自动跟随远端 main 或本机未发布分支。
 
 项目测试覆盖领域校验、真实 AgentPermit 决策、审批绑定/过期/取消竞态、独立数据库连接抢占执行权、下游去重、未知结果及人工关闭、工作流分支、Activity 重试、消息重投、旧历史回放和 HTTP 身份权限。测试中的 Temporal 使用内存服务，业务库使用 H2；真实 PostgreSQL 联调独立验收。依赖自身的 113 项测试单独记录。
+
+P2 新增严格 JSON/工具参数校验、模型重试、步数上限、读失败后重新规划、完成前核验，以及回放不再次调用模型的测试。默认模型是打包 JSON fixture，不发出模型 API 请求。
 
 ## 本地启动
 
@@ -81,7 +83,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:9090$($run.statusUrl)" -Headers $operat
 | API | 结果 |
 |---|---|
 | `POST /api/runs` | 202；返回稳定 runId 与状态地址 |
-| `GET /api/runs/{runId}` | 当前状态、合成证据、审批 ID、操作 ID 与结果 |
+| `GET /api/runs/{runId}` | 当前状态、合成证据、审批 ID、操作 ID、工具结果及 `agent` 规划进度/版本/核验观察/结论 |
 | `GET /api/runs/{runId}/approval` | 原始绑定、指纹、过期时间、决定与审批/取消人 |
 | `GET /api/runs/pending-approvals` | 最早到期的最多 100 个待审批记录，重复查询不创建新审批单 |
 | `POST /api/runs/{runId}/approval` | 202 表示决定与投递意图已持久保存，最终状态通过 GET 确认 |
@@ -95,6 +97,16 @@ Invoke-RestMethod -Uri "http://127.0.0.1:9090$($run.statusUrl)" -Headers $operat
 
 查询中的 `reasonCode` 表示最近一次工具治理决定的原因。策略拒绝为 `DENIED`，用户拒绝为 `REJECTED`。允许/拒绝/失败分支使用离线 fixture 验证；当前 API 的固定重启策略始终要求审批，不提供调用方切换策略的参数。
 
+## 离线 Agent 循环
+
+新 Run 读取合成证据与 `orders-runbook-v1`，由独立 `plan` Activity 返回严格的 [决策契约](platform-api/src/main/resources/agent/decision-v1.schema.json)。模型只能请求 `evidence.read`、`ops.restart`、`ops.verify`，参数必须精确为当前 orders 服务；`FINISH` 和 `NEED_CONTEXT` 不能携带工具。额外字段、重复 JSON 字段、尾随内容、未知工具、授权参数或其他资源均拒绝。
+
+默认 fixture 依次请求一次受审批重启、只读账本核验、结束诊断。工具结果反馈给下一次规划；测试也覆盖补查证据失败、核验读取失败后的重新规划。最多 6 次模型决策，每次 Activity 最多尝试 3 次；重试沿用稳定 decision ID。每个 Run 仍只允许一次逻辑重启，未知写结果阻塞在原核验流程中。
+
+`agent` 返回模型/提示词/工具/runbook 版本、模型步数、最近决策、核验观察和最终结论。已上报的模型结果由 Temporal 历史复用；模型请求尚未上报就中断时仍可能再次调用，这一阶段没有提供模型调用的跨进程费用去重。完整总时间、token/cost 预算后续实现。
+
+写入后必须先通过 `ops.verify` 才允许 `FINISH`。核验只确认绑定的账本回执，不证明真实服务健康；模型宣称成功不能替代核验。任务在后续规划或核验失败时可能为 FAILED，但先前写入仍已完成，可用 `/operation` 查看；失败不等于回滚。
+
 ## 跨进程恢复验收
 
 需要运行中的 Compose、匹配的 `PLATFORM_DATABASE_PASSWORD` 和 Python 3 标准库。脚本使用临时账户口令启动 API（默认需要空闲端口 9091 和 9092），验证等待审批、审批 outbox 与数据库重启恢复，以及拒绝、取消、超时和重复请求。随后在测试账本已提交、Activity 尚未返回时强制结束 Worker，由另一个端口上的新 Worker 恢复，核对回执相同且 generation 只增加一次；最后验证无回执的未知任务跨重启保留，并由 operator 留痕关闭。结束时只停止脚本创建的应用进程。
@@ -105,7 +117,7 @@ python scripts/smoke.py
 python scripts/smoke.py --restart-approval-db
 ```
 
-日志写入忽略的 `var/smoke.log`。此验收与内存工作流测试分开，GitHub Actions 也会运行它。实际执行记录见 TODO。
+日志写入忽略的 `var/smoke.log`。脚本也检查等待期间已记录的模型决策跨 Worker 重启不变，以及恢复后完整执行规划、写入、核验、结论三个模型步骤。此验收与内存工作流测试分开，GitHub Actions 也会运行它。实际执行记录见 TODO。
 
 2026-09-06 已在 [GitHub CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34025622000) 通过 PostgreSQL + Temporal 的 Worker 强制终止/恢复验收，并验证拒绝、取消、超时和重复请求保护。本机 Windows 的 Docker 引擎启动故障使本地容器联调尚未完成；Windows 本地 Maven 测试已通过。
 
@@ -125,7 +137,7 @@ python scripts/smoke.py --restart-approval-db
 - 首个有效决定由条件 UPDATE 保存；审批消息只唤醒 Workflow，首次执行仍从数据库验证决定、审批人当前权限、指纹和过期时间。服务端关闭 `platform.policy.restart-enabled` 或更换审批人后，旧批准不能发起新执行；读取已有绑定的结果无需重新取得写权限。
 - 审批记录中的决定与 `delivered` 标记构成事务性 outbox，投递为至少一次；失败自动重投、重复消息不增加本流程的逻辑执行。通知入口目前是持久审批列表，无邮件/IM 通知渠道。
 - 取消在执行前的数据库 claim 边界之前获胜时撤销审批；执行已经开始时返回冲突，不能承诺回滚。取消另存操作人，保留原审批人记录。过期通过截止时间判定，数据库不靠定时任务把 `PENDING` 改写为 `EXPIRED`。
-- `Workflow.getVersion` 保留 P0/P1.1/P1.2 命令序列，6 份固定旧历史参与回放。旧 Activity 仍使用明确隔离的模拟执行；P1.2 旧 Run 不自动获得新的持久副作用保证。P0/P1.1 尚未决定的 Run 没有可信审批记录，应取消并用新 requestId 重建。
+- `Workflow.getVersion` 保留 P0/P1.1/P1.2/P1.3 命令序列，9 份固定旧历史参与回放。P1.3 旧 Run 不插入模型步骤，P1.2 旧 Run 不自动获得新的持久副作用保证。P0/P1.1 尚未决定的 Run 没有可信审批记录，应取消并用新 requestId 重建。
 - API、Temporal gRPC 与 UI 仅绑定 loopback；当前 Compose 是开发演示配置。
 - 取消不会回滚已经完成的外部操作。
 - 当前业务库保存审批、执行结果与测试账本，不是完整 Run/Step 查询视图；LLM/RAG、管理前端、SSE、Sandbox 和多 Runtime 在 TODO 分阶段列明。

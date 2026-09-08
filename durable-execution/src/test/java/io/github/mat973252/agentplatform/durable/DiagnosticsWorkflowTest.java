@@ -12,6 +12,7 @@ import io.temporal.testing.WorkflowReplayer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -199,6 +200,7 @@ class DiagnosticsWorkflowTest {
     decideAfter(Duration.ofSeconds(1), ApprovalDecision.APPROVE);
     environment.registerDelayedCallback(Duration.ofSeconds(2), () -> {
       assertEquals(RunState.RECONCILIATION_REQUIRED, workflow.snapshot().state());
+      assertEquals(1, operations.decisionIds.size(), "An unknown write must block further planning");
       workflow.requestReconciliation();
     });
     environment.registerDelayedCallback(Duration.ofSeconds(3), () -> {
@@ -223,7 +225,141 @@ class DiagnosticsWorkflowTest {
     assertEquals(3, operations.durableAttempts);
   }
 
-  static class FakeOperations implements DiagnosticsActivities {
+  @Test
+  void modelDecisionsAreRecordedAndReplayedWithoutCallingTheModelAgain() throws Exception {
+    decideAfter(Duration.ofSeconds(1), ApprovalDecision.APPROVE);
+    var result = workflow.execute(new RunRequest("orders", 30));
+    assertNotNull(result.agent());
+    assertEquals(3, result.agent().modelSteps());
+    assertEquals("offline-diagnostics-v1", result.agent().modelVersion());
+    assertEquals(List.of(runId + ":model:1", runId + ":model:2", runId + ":model:3"), operations.decisionIds);
+    assertEquals(1, operations.verificationReads);
+    WorkflowReplayer.replayWorkflowExecution(environment.getWorkflowClient().fetchHistory(runId), DiagnosticsWorkflowImpl.class);
+    assertEquals(3, operations.decisionIds.size());
+    assertEquals(1, operations.operationIds.size());
+  }
+
+  @Test
+  void invalidModelToolCannotReachApprovalOrExecution() {
+    operations.planScript.add(tool("shell.exec"));
+    var result = workflow.execute(new RunRequest("orders", 30));
+    assertEquals(RunState.FAILED, result.state());
+    assertEquals("MODEL_OUTPUT_INVALID", result.reasonCode());
+    assertEquals(0, operations.prepareCalls);
+    assertTrue(operations.operationIds.isEmpty());
+  }
+
+  @Test
+  void failedReadCanBeReplannedWithoutRetryingAWrite() {
+    operations.planScript.addAll(List.of(tool("evidence.read"), tool("evidence.read"), finish()));
+    operations.additionalReadFailures = 3;
+    var result = workflow.execute(new RunRequest("orders", 30));
+    assertEquals(RunState.SUCCEEDED, result.state());
+    assertEquals(5, operations.readAttempts);
+    assertEquals("TOOL_READ_FAILED", operations.contexts.get(1).observation());
+    assertTrue(operations.operationIds.isEmpty());
+  }
+
+  @Test
+  void modelCannotRepeatAConfirmedWriteOrFinishWithoutVerification() {
+    operations.planScript.addAll(List.of(tool("ops.restart"), tool("ops.restart")));
+    decideAfter(Duration.ofSeconds(1), ApprovalDecision.APPROVE);
+    var result = workflow.execute(new RunRequest("orders", 30));
+    assertEquals("MODEL_ACTION_INVALID", result.reasonCode());
+    assertEquals(RunState.FAILED, result.state());
+    assertEquals(1, operations.operationIds.size());
+  }
+
+  @Test
+  void aModelSuccessClaimCannotReplaceVerification() {
+    operations.planScript.addAll(List.of(tool("ops.restart"), finish()));
+    decideAfter(Duration.ofSeconds(1), ApprovalDecision.APPROVE);
+    var result = workflow.execute(new RunRequest("orders", 30));
+    assertEquals(RunState.FAILED, result.state());
+    assertEquals("VERIFICATION_REQUIRED", result.reasonCode());
+    assertEquals(1, operations.operationIds.size());
+  }
+
+  @Test
+  void unconfirmedVerificationAllowsReadOnlyReplanning() {
+    operations.planScript.addAll(List.of(tool("ops.restart"), tool("ops.verify"), finish()));
+    operations.verificationConfirmed = false;
+    decideAfter(Duration.ofSeconds(1), ApprovalDecision.APPROVE);
+    var result = workflow.execute(new RunRequest("orders", 30));
+    assertEquals(RunState.FAILED, result.state());
+    assertEquals("VERIFICATION_REQUIRED", result.reasonCode());
+    assertEquals("VERIFICATION_NOT_CONFIRMED", operations.contexts.get(2).observation());
+    assertEquals(1, operations.operationIds.size());
+  }
+
+  @Test
+  void aLoopStopsAtTheServerDefinedStepLimit() {
+    for (int i = 0; i < AgentContext.MAX_MODEL_STEPS; i++) operations.planScript.add(tool("evidence.read"));
+    var result = workflow.execute(new RunRequest("orders", 30));
+    assertEquals(RunState.FAILED, result.state());
+    assertEquals("STEP_LIMIT_EXCEEDED", result.reasonCode());
+    assertEquals(AgentContext.MAX_MODEL_STEPS, operations.decisionIds.size());
+    assertTrue(operations.operationIds.isEmpty());
+  }
+
+  @Test
+  void insufficientContextHasAnExplicitTerminalReason() {
+    operations.planScript.add(new AgentDecision("1", "NEED_CONTEXT", null, Map.of(), "Need more evidence"));
+    var result = workflow.execute(new RunRequest("orders", 30));
+    assertEquals(RunState.FAILED, result.state());
+    assertEquals("CONTEXT_INSUFFICIENT", result.reasonCode());
+    assertTrue(operations.operationIds.isEmpty());
+  }
+
+  private static AgentDecision tool(String name) {
+    return new AgentDecision("1", "CALL_TOOL", name, Map.of("service", "orders"), "Synthetic plan");
+  }
+
+  @Test
+  void transientModelRetriesUseTheSameDecisionId() {
+    operations.modelFailures = 2;
+    operations.planScript.add(finish());
+    assertEquals(RunState.SUCCEEDED, workflow.execute(new RunRequest("orders", 30)).state());
+    assertEquals(List.of(runId + ":model:1", runId + ":model:1", runId + ":model:1"), operations.decisionIds);
+    assertTrue(operations.operationIds.isEmpty());
+  }
+
+  @Test
+  void exhaustedModelRetriesFailWithoutToolExecution() {
+    operations.modelFailures = 10;
+    var result = workflow.execute(new RunRequest("orders", 30));
+    assertEquals(RunState.FAILED, result.state());
+    assertEquals("MODEL_FAILED", result.reasonCode());
+    assertEquals(3, operations.decisionIds.size());
+    assertEquals(0, operations.prepareCalls);
+  }
+
+  @Test
+  void invalidParsedModelOutputIsNotRetriedOrReplanned() {
+    operations.invalidModelOutput = true;
+    var result = workflow.execute(new RunRequest("orders", 30));
+    assertEquals("MODEL_OUTPUT_INVALID", result.reasonCode());
+    assertEquals(1, operations.decisionIds.size());
+    assertTrue(operations.operationIds.isEmpty());
+  }
+
+  @Test
+  void aVerificationReadFailureCanBeReplannedWithoutAnotherWrite() {
+    operations.verificationFailures = 3;
+    operations.planScript.addAll(List.of(tool("ops.restart"), tool("ops.verify"), tool("ops.verify"), finish()));
+    decideAfter(Duration.ofSeconds(1), ApprovalDecision.APPROVE);
+    var result = workflow.execute(new RunRequest("orders", 30));
+    assertEquals(RunState.SUCCEEDED, result.state());
+    assertEquals("VERIFICATION_READ_FAILED", operations.contexts.get(2).observation());
+    assertEquals(4, operations.verificationReads);
+    assertEquals(1, operations.operationIds.size());
+  }
+
+  private static AgentDecision finish() {
+    return new AgentDecision("1", "FINISH", null, Map.of(), "Synthetic diagnostic conclusion");
+  }
+
+  static class FakeOperations implements DiagnosticsActivities, AgentActivities {
     int readFailures;
     int readAttempts;
     int toolFailures;
@@ -235,10 +371,41 @@ class DiagnosticsWorkflowTest {
     int reconciliationReads;
     ActionResult reconciled = new ActionResult(ActionStatus.RECONCILIATION_REQUIRED, "OUTCOME_UNKNOWN", null);
     final List<String> operationIds = new ArrayList<>();
+    final List<String> decisionIds = new ArrayList<>();
+    final List<AgentContext> contexts = new ArrayList<>();
+    final List<AgentDecision> planScript = new ArrayList<>();
+    int additionalReadFailures;
+    int prepareCalls;
+    int verificationReads;
+    boolean verificationConfirmed = true;
+    int modelFailures;
+    boolean invalidModelOutput;
+    int verificationFailures;
+
+    @Override
+    public String readRunbook(String service) { return "Synthetic fixed orders runbook"; }
+
+    @Override
+    public AgentDecision plan(AgentContext context) {
+      decisionIds.add(context.decisionId());
+      if (invalidModelOutput) throw ApplicationFailure.newNonRetryableFailure("Bad fixture", "MODEL_OUTPUT_INVALID");
+      if (decisionIds.size() <= modelFailures) throw ApplicationFailure.newFailure("Model unavailable", "MODEL_UNAVAILABLE");
+      contexts.add(context);
+      if (!planScript.isEmpty()) return planScript.get(contexts.size() - 1);
+      if (context.verified()) return finish();
+      return tool(context.writeCompleted() ? "ops.verify" : "ops.restart");
+    }
+
+    @Override
+    public VerificationResult verifyOperation(String operationId, String service, String approvalId, String expectedOutput) {
+      verificationReads++;
+      if (verificationReads <= verificationFailures) throw ApplicationFailure.newFailure("Read unavailable", "READ_UNAVAILABLE");
+      return new VerificationResult(verificationConfirmed, "Synthetic ledger verification");
+    }
 
     @Override
     public String readEvidence(String service) {
-      if (++readAttempts <= readFailures) {
+      if (++readAttempts <= readFailures || (readAttempts > 1 && readAttempts <= additionalReadFailures + 1)) {
         throw ApplicationFailure.newFailure("Synthetic read failure", "DEMO_READ_FAILURE");
       }
       return "Synthetic 5xx evidence for " + service;
@@ -262,6 +429,7 @@ class DiagnosticsWorkflowTest {
 
     @Override
     public ActionResult prepareAction(String runId, String operationId, String service, String approvalId, long expiresAt) {
+      prepareCalls++;
       return attemptAction(operationId, service, approvalId, false);
     }
 
