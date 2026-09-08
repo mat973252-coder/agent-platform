@@ -11,6 +11,10 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import java.net.URI;
+import java.security.Principal;
+import java.util.List;
+import io.github.mat973252.agentplatform.permit.ApprovalRecord;
+import io.github.mat973252.agentplatform.permit.JdbcApprovalStore;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -18,9 +22,11 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/runs")
 class RunController {
   private final RunService runs;
+  private final JdbcApprovalStore approvals;
 
-  RunController(RunService runs) {
+  RunController(RunService runs, JdbcApprovalStore approvals) {
     this.runs = runs;
+    this.approvals = approvals;
   }
 
   @PostMapping
@@ -37,16 +43,27 @@ class RunController {
   }
 
   @PostMapping("/{runId}/approval")
-  ResponseEntity<Submitted> approve(@PathVariable String runId, @Valid @RequestBody DecideRun request) {
-    runs.submitApproval(runId, new ApprovalCommand(request.approvalId(), request.decision()));
+  ResponseEntity<Submitted> approve(@PathVariable String runId, @Valid @RequestBody DecideRun request, Principal principal) {
+    runs.submitApproval(runId, new ApprovalCommand(request.approvalId(), request.decision()), principal.getName());
     return ResponseEntity.accepted().body(new Submitted("APPROVAL_SUBMITTED"));
   }
 
   @PostMapping("/{runId}/cancel")
-  ResponseEntity<Submitted> cancel(@PathVariable String runId) {
-    runs.cancel(runId);
+  ResponseEntity<Submitted> cancel(@PathVariable String runId, Principal principal) {
+    runs.cancel(runId, principal.getName());
     return ResponseEntity.accepted().body(new Submitted("CANCELLATION_SUBMITTED"));
   }
+
+  @GetMapping("/{runId}/approval")
+  ApprovalRecord approval(@PathVariable String runId) {
+    runs.snapshot(runId);
+    var record = approvals.findByRun(runId);
+    if (record == null) throw new IllegalStateException("Run has no persistent approval request");
+    return record;
+  }
+
+  @GetMapping("/pending-approvals")
+  List<ApprovalRecord> pendingApprovals() { return approvals.pending(); }
 
   record CreateRun(
       @NotBlank @Pattern(regexp = "[A-Za-z0-9][A-Za-z0-9_-]{0,63}") String requestId,

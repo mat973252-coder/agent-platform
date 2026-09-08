@@ -15,16 +15,23 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      - name: Configure ephemeral approval database credential
+        run: |
+          python3 - <<'PY'
+          import os, secrets
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write("PLATFORM_DATABASE_PASSWORD=" + secrets.token_urlsafe(32) + "\n")
+          PY
       - name: Build locked AgentPermit dependency
         run: python3 scripts/bootstrap-agentpermit.py
       - name: Build and test
         run: ./mvnw -B -ntp verify
       - name: Validate local deployment
         run: docker compose config --quiet
-      - name: Start PostgreSQL-backed Temporal
+      - name: Start Temporal and approval PostgreSQL databases
         run: docker compose up -d --wait --wait-timeout 180
-      - name: Verify API and Worker crash recovery
-        run: python3 scripts/smoke.py
+      - name: Verify Worker, approval database and message recovery
+        run: python3 scripts/smoke.py --restart-approval-db
       - name: Collect container logs
         if: failure()
         run: docker compose logs --no-color > compose.log

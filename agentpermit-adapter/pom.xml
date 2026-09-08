@@ -10,6 +10,15 @@
   <artifactId>agentpermit-adapter</artifactId>
   <dependencies>
     <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-jdbc</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>io.github.mat973252</groupId>
       <artifactId>agent-runtime-core</artifactId>
     </dependency>

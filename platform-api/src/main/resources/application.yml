@@ -1,10 +1,17 @@
 spring:
   application:
     name: agent-platform
+  datasource:
+    url: jdbc:postgresql://127.0.0.1:5434/agent_platform
+    username: agent_platform
+    password: ${PLATFORM_DATABASE_PASSWORD:}
 server:
   address: 127.0.0.1
   port: 9090
 platform:
+  security:
+    operator-password: ${PLATFORM_OPERATOR_PASSWORD:}
+    approver-password: ${PLATFORM_APPROVER_PASSWORD:}
   temporal:
     target: 127.0.0.1:7233
     namespace: default

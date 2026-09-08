@@ -56,6 +56,14 @@ class DiagnosticsWorkflowTest {
   }
 
   @Test
+  void aWorkflowSignalAloneCannotAuthorizeTheTool() {
+    environment.registerDelayedCallback(Duration.ofSeconds(1), () ->
+        workflow.submitApproval(new ApprovalCommand(runId + ":approval:restart", ApprovalDecision.APPROVE)));
+    assertEquals(RunState.TIMED_OUT, workflow.execute(new RunRequest("orders", 30)).state());
+    assertTrue(operations.operationIds.isEmpty());
+  }
+
+  @Test
   void rejectionNeverExecutesTheTool() {
     decideAfter(Duration.ofSeconds(1), ApprovalDecision.REJECT);
     assertEquals(RunState.REJECTED, workflow.execute(new RunRequest("orders", 30)).state());
@@ -79,6 +87,7 @@ class DiagnosticsWorkflowTest {
   @Test
   void theFirstDecisionWins() {
     environment.registerDelayedCallback(Duration.ofSeconds(1), () -> {
+      operations.approvalState = ApprovalState.REJECT;
       workflow.submitApproval(new ApprovalCommand(runId + ":approval:restart", ApprovalDecision.REJECT));
       workflow.submitApproval(new ApprovalCommand(runId + ":approval:restart", ApprovalDecision.APPROVE));
     });
@@ -167,6 +176,7 @@ class DiagnosticsWorkflowTest {
     environment.registerDelayedCallback(delay, () -> {
       assertEquals(RunState.WAITING_APPROVAL, workflow.snapshot().state());
       assertTrue(operations.operationIds.isEmpty());
+      operations.approvalState = ApprovalState.valueOf(decision.name());
       workflow.submitApproval(new ApprovalCommand(runId + ":approval:restart", decision));
     });
   }
@@ -177,6 +187,7 @@ class DiagnosticsWorkflowTest {
     int toolFailures;
     ActionStatus initialStatus = ActionStatus.APPROVAL_REQUIRED;
     ActionStatus approvedStatus = ActionStatus.EXECUTED;
+    ApprovalState approvalState = ApprovalState.PENDING;
     final List<String> operationIds = new ArrayList<>();
 
     @Override
@@ -201,6 +212,19 @@ class DiagnosticsWorkflowTest {
       var status = approved ? approvedStatus : initialStatus;
       return new ActionResult(status, "SYNTHETIC_" + status,
           status == ActionStatus.EXECUTED ? executeAction(operationId, service) : null);
+    }
+
+    @Override
+    public ActionResult prepareAction(String runId, String operationId, String service, String approvalId, long expiresAt) {
+      return attemptAction(operationId, service, approvalId, false);
+    }
+
+    @Override
+    public ApprovalState readApproval(String approvalId) { return approvalState; }
+
+    @Override
+    public ActionResult executeApprovedAction(String operationId, String service, String approvalId) {
+      return attemptAction(operationId, service, approvalId, true);
     }
   }
 }

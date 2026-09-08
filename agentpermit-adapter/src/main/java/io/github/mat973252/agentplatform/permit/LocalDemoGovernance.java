@@ -11,14 +11,14 @@ import io.github.mat973252.agentplatform.core.ActionResult;
 import java.time.Clock;
 import java.time.Duration;
 
-/** Local fixtures only: workflow decisions are not authenticated approval credentials. */
+/** P0/P1.1 compatibility fixtures only: never used by the persistent approval path. */
 public final class LocalDemoGovernance {
   private static final System.Logger LOG = System.getLogger(LocalDemoGovernance.class.getName());
   private final InMemoryResultIdempotencyGuard guard = new InMemoryResultIdempotencyGuard();
 
   public ActionResult restart(String operationId, String service, String approvalId, boolean approved) {
     // Reconstruct a short-lived demo approval from the Workflow's recorded decision after recovery.
-    // P1.2 must replace this with independently authenticated, durable approvals.
+    // New runs use PersistentGovernance and must never reconstruct approval from this boolean.
     var approvals = new InMemoryApprovalService(Clock.systemUTC(), () -> approvalId, new InvocationFingerprinter());
     if (approved) {
       approvals.request(AgentPermitAdapter.restartInvocation(operationId, service), Duration.ofMinutes(1));

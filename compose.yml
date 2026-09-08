@@ -1,5 +1,21 @@
 name: agent-platform
 services:
+  approval-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: agent_platform
+      POSTGRES_PASSWORD: ${PLATFORM_DATABASE_PASSWORD:?Set PLATFORM_DATABASE_PASSWORD}
+      POSTGRES_DB: agent_platform
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - approval-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U agent_platform -d agent_platform"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
   postgresql:
     image: postgres:16
     environment:
@@ -72,3 +88,4 @@ services:
 
 volumes:
   temporal-data:
+  approval-data:

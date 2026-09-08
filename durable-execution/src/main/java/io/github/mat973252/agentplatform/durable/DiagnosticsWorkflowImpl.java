@@ -36,6 +36,7 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
   private String output;
   private String reasonCode;
   private ApprovalDecision decision;
+  private boolean persistentApproval;
 
   @Override
   public RunSnapshot execute(RunRequest input) {
@@ -59,6 +60,9 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
     evidence = activities.readEvidence(request.service());
     int version = Workflow.getVersion("agentpermit-action-v1", Workflow.DEFAULT_VERSION, 1);
     if (version != Workflow.DEFAULT_VERSION) {
+      persistentApproval = Workflow.getVersion("persistent-approval-v1", Workflow.DEFAULT_VERSION, 1)
+          != Workflow.DEFAULT_VERSION;
+      if (persistentApproval) return executeWithPersistentApproval();
       var action = activities.attemptAction(operationId, request.service(), approvalId, false);
       reasonCode = action.reasonCode();
       if (action.status() != ActionStatus.APPROVAL_REQUIRED) {
@@ -84,6 +88,32 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
     return snapshot();
   }
 
+  private RunSnapshot executeWithPersistentApproval() {
+    long deadline = Workflow.currentTimeMillis() + request.approvalTimeoutSeconds() * 1000L;
+    var prepared = activities.prepareAction(runId, operationId, request.service(), approvalId, deadline);
+    reasonCode = prepared.reasonCode();
+    if (prepared.status() != ActionStatus.APPROVAL_REQUIRED) return finishAction(prepared);
+    state = RunState.WAITING_APPROVAL;
+    while (Workflow.currentTimeMillis() < deadline) {
+      boolean received = Workflow.await(Duration.ofMillis(deadline - Workflow.currentTimeMillis()), () -> decision != null);
+      if (!received) break;
+      // Signals wake the Workflow; only the independent approval record determines the decision.
+      decision = null;
+      switch (activities.readApproval(approvalId)) {
+        case APPROVE -> {
+          state = RunState.RUNNING;
+          return finishAction(activities.executeApprovedAction(operationId, request.service(), approvalId));
+        }
+        case REJECT -> { state = RunState.REJECTED; return snapshot(); }
+        case CANCELLED -> { state = RunState.CANCELLED; return snapshot(); }
+        case EXPIRED -> { state = RunState.TIMED_OUT; return snapshot(); }
+        case PENDING -> { /* Ignore untrusted or stale notifications without extending the deadline. */ }
+      }
+    }
+    state = RunState.TIMED_OUT;
+    return snapshot();
+  }
+
   private RunSnapshot finishAction(ActionResult action) {
     reasonCode = action.reasonCode();
     output = action.output();
@@ -97,7 +127,7 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
 
   @Override
   public void submitApproval(ApprovalCommand command) {
-    if (state == RunState.WAITING_APPROVAL && decision == null
+    if ((state == RunState.WAITING_APPROVAL || (persistentApproval && !state.terminal())) && decision == null
         && approvalId.equals(command.approvalId())) {
       decision = command.decision();
     }

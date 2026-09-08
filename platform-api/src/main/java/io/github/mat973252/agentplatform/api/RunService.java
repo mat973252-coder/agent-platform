@@ -5,21 +5,29 @@ import io.github.mat973252.agentplatform.core.RunRequest;
 import io.github.mat973252.agentplatform.core.RunSnapshot;
 import io.github.mat973252.agentplatform.core.RunState;
 import io.github.mat973252.agentplatform.durable.DiagnosticsWorkflow;
+import io.github.mat973252.agentplatform.permit.JdbcApprovalStore;
+import io.github.mat973252.agentplatform.permit.PersistentGovernance;
 import io.temporal.api.enums.v1.WorkflowIdReusePolicy;
 import io.temporal.client.WorkflowClient;
 import io.temporal.client.WorkflowOptions;
 import io.temporal.client.WorkflowStub;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.security.access.AccessDeniedException;
 
 @Service
 class RunService {
   private final WorkflowClient client;
   private final String taskQueue;
+  private final JdbcApprovalStore approvals;
+  private final PersistentGovernance governance;
 
-  RunService(WorkflowClient client, @Value("${platform.temporal.task-queue}") String taskQueue) {
+  RunService(WorkflowClient client, @Value("${platform.temporal.task-queue}") String taskQueue,
+      JdbcApprovalStore approvals, PersistentGovernance governance) {
     this.client = client;
     this.taskQueue = taskQueue;
+    this.approvals = approvals;
+    this.governance = governance;
   }
 
   String create(String requestId, RunRequest request) {
@@ -38,22 +46,34 @@ class RunService {
     return workflow(runId).snapshot();
   }
 
-  void submitApproval(String runId, ApprovalCommand command) {
+  void submitApproval(String runId, ApprovalCommand command, String actor) {
+    var record = approvals.get(command.approvalId());
+    if (!record.runId().equals(runId)) throw new IllegalStateException("Approval does not belong to this Run");
+    if (!governance.canApprove(actor, record.resourceId())) throw new AccessDeniedException("Approval permission denied");
+    if (record.status().equals(command.decision().name()) && actor.equals(record.decidedBy())) {
+      approvals.decide(runId, command.approvalId(), command.decision(), actor);
+      return;
+    }
     var workflow = workflow(runId);
     var snapshot = workflow.snapshot();
     if (snapshot.state() != RunState.WAITING_APPROVAL
         || !command.approvalId().equals(snapshot.approvalId())) {
       throw new IllegalStateException("Run is not waiting for this approval");
     }
-    workflow.submitApproval(command);
+    approvals.decide(runId, command.approvalId(), command.decision(), actor);
   }
 
-  void cancel(String runId) {
+  void cancel(String runId, String actor) {
     var workflow = workflow(runId);
     if (workflow.snapshot().state().terminal()) {
       throw new IllegalStateException("Run is already terminal");
     }
-    WorkflowStub.fromTyped(workflow).cancel();
+    var record = approvals.findByRun(runId);
+    if (record == null) {
+      WorkflowStub.fromTyped(workflow).cancel();
+    } else {
+      approvals.cancel(runId, record.approvalId(), actor);
+    }
   }
 
   private DiagnosticsWorkflow workflow(String runId) {
