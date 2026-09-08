@@ -121,7 +121,9 @@ P2 首批范围：模型可补查证据、申请一次受审批的 orders 重启
 
 预算实现（2026-09-09）：服务端冻结 6 步/900 秒/100000 token/1000000 microUSD 的默认限额，审批等待、Activity 重试及退避包含在总时限内。每次模型请求事务预留，成功结算与决策缓存同事务；未知响应保留全额预留，重试必须另有额度。新增只读 `/budget` 查询，原 P2 历史通过版本分支兼容。超时后仅保留未知写的只读核验/人工关闭，不能回滚已开始操作。计量模式固定 `OFFLINE_SIMULATED`，不是供应商账单。
 
-预算本地验证（2026-09-09）：核心、Activity、Workflow 先补测试观察预期失败后实现。Maven `verify` 117 项通过（core 12、adapter 28、Workflow 37、固定旧历史 12、API/预算/fixture/投递 28）。覆盖并发预算争抢、丢响应保留、落账后重试不重复调用、迟到响应各自计量且不覆盖首个结果、无效输出计量、审批总时限、退避提前耗尽、超时后未知写核验，以及 HTTP 伪造预算不能覆盖服务端限额。Temporal 为内存服务、业务库为 H2；Python smoke/历史 JSON 语法及 `git diff --check` 通过。Windows Docker 引擎管道仍不可用；新增跨进程 smoke 待 CI 验收后补录。
+预算本地验证（2026-09-09）：核心、Activity、Workflow 先补测试观察预期失败后实现。Maven `verify` 117 项通过（core 12、adapter 28、Workflow 37、固定旧历史 12、API/预算/fixture/投递 28）。覆盖并发预算争抢、丢响应保留、落账后重试不重复调用、迟到响应各自计量且不覆盖首个结果、无效输出计量、审批总时限、退避提前耗尽、超时后未知写核验，以及 HTTP 伪造预算不能覆盖服务端限额。Temporal 为内存服务、业务库为 H2；Python smoke/历史 JSON 语法及 `git diff --check` 通过。Windows Docker 引擎管道仍不可用，容器证据来自 CI。
+
+预算真实联调（2026-09-09）：[预算 GitHub CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34250825483) 对功能提交 `6e310951311583169699f1b277e7b42695854c6a` 的上游 113 项、项目 117 项测试及全部 smoke 通过。等待审批的 `run-d754d119-f265-4c6f-880d-6c3a9cc82c9e` 经 Worker `5563 → 6397` 和审批 PostgreSQL 重启后保持预算与固定 deadline，完成后结算 2784 token / 3000 microUSD。账本提交后退出的 `run-485e954e-f457-4cb1-bb45-f90c9fbf5d5a` 经 Worker `6702 → 6944` 恢复仍只有一次写入。模型响应后暂停的 `run-1200cf8f-d15e-4bad-96e8-ed5beac8aa2f` 在日志确认响应已返回后强制结束 Worker `7813`，新 Worker `8038` 在另一端口恢复；原尝试保留 2560 token / 5000 microUSD 预留，后续三步合计结算 2784 / 3000，物理尝试总数为 4。原审批补投、拒绝/取消/超时和未知写人工关闭也通过。所有模型用量仍为合成计量，不是实际 LLM 消费。
 
 本地验证（2026-09-08）：Maven `verify` 94 项通过（core 10、adapter 28、Workflow 30、固定旧历史 9、API/fixture/解析/投递 17）。覆盖非法模型输出、稳定决策 ID、模型重试耗尽、证据与核验读取失败后重新规划、步数上限、拒绝第二次写、拒绝未经核验的成功声明、未知结果阻塞、以及回放不调用模型/工具。Temporal 为内存服务、业务库为 H2；Python smoke 语法、打包 JSON 语法和 `git diff --check` 通过。
 
