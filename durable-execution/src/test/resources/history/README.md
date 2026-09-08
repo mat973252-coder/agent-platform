@@ -25,3 +25,8 @@ Worker identity 已脱敏。这些样本验证持久执行结果和核验分支�
 Run ID 为 `run-p13-history-fixture`，输入为 orders / 30 秒，Activity 使用合成 fixture；
 Worker identity 已脱敏。它们分别保护等待审批、批准完成和等待未知结果核验的历史，
 确保新增 Agent 循环不会插入旧 Run。
+
+`p2-waiting.json`、`p2-approved.json` 与 `p2-unknown.json` 在预算控制修改前，
+以提交 `f07bca5ede7cecc82d8704bd6b8f15c8b5d3e983` 的离线 Agent 循环生成。
+Run ID 为 `run-p2-history-fixture`，输入为 orders / 30 秒，Activity 使用合成 fixture；
+Worker identity 已脱敏。它们保护未携带预算的旧 Run，确保预算 Activity 不插入旧命令序列。

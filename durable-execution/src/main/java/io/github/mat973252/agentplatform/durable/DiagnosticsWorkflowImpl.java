@@ -5,18 +5,21 @@ import io.github.mat973252.agentplatform.core.ActionStatus;
 import io.github.mat973252.agentplatform.core.AgentContext;
 import io.github.mat973252.agentplatform.core.AgentDecision;
 import io.github.mat973252.agentplatform.core.AgentProgress;
+import io.github.mat973252.agentplatform.core.BudgetContext;
 import io.github.mat973252.agentplatform.core.ApprovalCommand;
 import io.github.mat973252.agentplatform.core.ApprovalDecision;
 import io.github.mat973252.agentplatform.core.RunRequest;
 import io.github.mat973252.agentplatform.core.RunSnapshot;
 import io.github.mat973252.agentplatform.core.RunState;
 import io.temporal.activity.ActivityOptions;
+import io.temporal.api.enums.v1.RetryState;
 import io.temporal.common.RetryOptions;
 import io.temporal.failure.ActivityFailure;
 import io.temporal.failure.ApplicationFailure;
 import io.temporal.failure.CanceledFailure;
 import io.temporal.workflow.Workflow;
 import java.time.Duration;
+import java.util.Set;
 
 public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
   private final DiagnosticsActivities activities = Workflow.newActivityStub(
@@ -54,6 +57,9 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
   private String conclusion;
   private boolean writeCompleted;
   private boolean verified;
+  private BudgetContext budget;
+  private boolean activityLimitedByBudget;
+  private static final class TimeBudgetExpired extends RuntimeException {}
 
   @Override
   public RunSnapshot execute(RunRequest input) {
@@ -62,11 +68,18 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
     approvalId = runId + ":approval:restart";
     operationId = runId + ":restart:1";
     try {
+      if (Workflow.getVersion("run-budget-v1", Workflow.DEFAULT_VERSION, 1) != Workflow.DEFAULT_VERSION) {
+        budget = new BudgetContext(runId, request.budget(), Workflow.currentTimeMillis() + request.budget().maxDurationSeconds() * 1000L);
+        budgetActivities().initializeBudget(budget);
+      }
       return executeSteps();
+    } catch (TimeBudgetExpired expired) {
+      return timeBudgetEnd();
     } catch (CanceledFailure failure) {
       state = RunState.CANCELLED;
       throw failure;
     } catch (ActivityFailure failure) {
+      if (!(failure.getCause() instanceof CanceledFailure) && budgetTimeout(failure)) return timeBudgetEnd();
       state = failure.getCause() instanceof CanceledFailure ? RunState.CANCELLED : RunState.FAILED;
       throw failure;
     }
@@ -74,7 +87,7 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
 
   private RunSnapshot executeSteps() {
     state = RunState.RUNNING;
-    evidence = activities.readEvidence(request.service());
+    evidence = toolActivities().readEvidence(request.service());
     if (Workflow.getVersion("agent-loop-v1", Workflow.DEFAULT_VERSION, 1) != Workflow.DEFAULT_VERSION) {
       return executeAgentLoop();
     }
@@ -112,14 +125,18 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
     agentLoop = true;
     persistentApproval = true;
     String runbook;
-    try { runbook = agentActivities.readRunbook(request.service()); }
+    try { runbook = planningActivities().readRunbook(request.service()); }
     catch (ActivityFailure failure) { return agentFailure(failure, "CONTEXT_UNAVAILABLE"); }
-    for (int step = 1; step <= AgentContext.MAX_MODEL_STEPS; step++) {
+    int maxSteps = budget == null ? AgentContext.MAX_MODEL_STEPS : budget.limits().maxModelSteps();
+    for (int step = 1; step <= maxSteps; step++) {
+      requireTime();
       modelSteps = step;
       try {
-        lastDecision = agentActivities.plan(new AgentContext(runId + ":model:" + step, request.service(),
-            evidence, runbook, observation, writeCompleted, verified));
+        var context = new AgentContext(runId + ":model:" + step, request.service(),
+            evidence, runbook, observation, writeCompleted, verified);
+        lastDecision = budget == null ? agentActivities.plan(context) : budgetActivities().planWithinBudget(context, budget);
       } catch (ActivityFailure failure) { return agentFailure(failure, "MODEL_FAILED"); }
+      requireTime();
       try {
         if (lastDecision == null) throw new IllegalArgumentException("Missing model decision");
         lastDecision.validateFor(request.service());
@@ -137,6 +154,7 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
       }
       runPlannedTool(lastDecision.tool());
       if (state.terminal()) return snapshot();
+      requireTime();
     }
     return failAgent("STEP_LIMIT_EXCEEDED");
   }
@@ -145,10 +163,11 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
     switch (tool) {
       case "evidence.read" -> {
         try {
-          evidence = activities.readEvidence(request.service());
+          evidence = toolActivities().readEvidence(request.service());
           observation = "EVIDENCE_READ_COMPLETED";
         } catch (ActivityFailure failure) {
           if (failure.getCause() instanceof CanceledFailure) throw failure;
+          if (budgetTimeout(failure)) throw new TimeBudgetExpired();
           observation = "TOOL_READ_FAILED";
         }
       }
@@ -168,11 +187,12 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
   private void verifyPlannedOperation() {
     if (!writeCompleted) { failAgent("MODEL_ACTION_INVALID"); return; }
     try {
-      var verification = agentActivities.verifyOperation(operationId, request.service(), approvalId, output);
+      var verification = planningActivities().verifyOperation(operationId, request.service(), approvalId, output);
       verified = verification != null && verification.confirmed();
       observation = verified ? "VERIFICATION_CONFIRMED: " + verification.detail() : "VERIFICATION_NOT_CONFIRMED";
     } catch (ActivityFailure failure) {
       if (failure.getCause() instanceof CanceledFailure) throw failure;
+      if (budgetTimeout(failure)) throw new TimeBudgetExpired();
       verified = false;
       observation = "VERIFICATION_READ_FAILED";
     }
@@ -180,8 +200,45 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
 
   private RunSnapshot agentFailure(ActivityFailure failure, String fallback) {
     if (failure.getCause() instanceof CanceledFailure) throw failure;
-    return failAgent(failure.getCause() instanceof ApplicationFailure application
-        && application.getType().equals("MODEL_OUTPUT_INVALID") ? "MODEL_OUTPUT_INVALID" : fallback);
+    String type = failure.getCause() instanceof ApplicationFailure application ? application.getType() : fallback;
+    if (budgetTimeout(failure) || type.equals("RUN_TIME_BUDGET_EXCEEDED")) return timeBudgetEnd();
+    return failAgent(Set.of("MODEL_OUTPUT_INVALID", "TOKEN_BUDGET_EXCEEDED", "COST_BUDGET_EXCEEDED",
+        "MODEL_ATTEMPT_UNCONFIRMED", "MODEL_USAGE_EXCEEDS_ALLOWANCE", "AGENT_VERSION_UNSUPPORTED").contains(type) ? type : fallback);
+  }
+
+  private DiagnosticsActivities toolActivities() {
+    return budget == null ? activities : Workflow.newActivityStub(DiagnosticsActivities.class, remainingOptions());
+  }
+
+  private AgentActivities planningActivities() {
+    return budget == null ? agentActivities : Workflow.newActivityStub(AgentActivities.class, remainingOptions());
+  }
+
+  private BudgetActivities budgetActivities() {
+    return Workflow.newActivityStub(BudgetActivities.class, remainingOptions());
+  }
+
+  private ActivityOptions remainingOptions() {
+    requireTime();
+    long remaining = budget.deadlineEpochMillis() - Workflow.currentTimeMillis();
+    activityLimitedByBudget = remaining <= 45000;
+    remaining = Math.min(45000, remaining);
+    return ActivityOptions.newBuilder().setStartToCloseTimeout(Duration.ofMillis(Math.min(10000, remaining)))
+        .setScheduleToCloseTimeout(Duration.ofMillis(remaining))
+        .setRetryOptions(RetryOptions.newBuilder().setInitialInterval(Duration.ofSeconds(1))
+            .setMaximumInterval(Duration.ofSeconds(5)).setMaximumAttempts(3).build()).build();
+  }
+
+  private boolean timeExpired() { return budget != null && Workflow.currentTimeMillis() >= budget.deadlineEpochMillis(); }
+  private boolean budgetTimeout(ActivityFailure failure) {
+    return timeExpired() || (budget != null && activityLimitedByBudget && failure.getRetryState() == RetryState.RETRY_STATE_TIMEOUT);
+  }
+  private void requireTime() { if (timeExpired()) throw new TimeBudgetExpired(); }
+
+  private RunSnapshot timeBudgetEnd() {
+    state = RunState.TIMED_OUT;
+    reasonCode = "RUN_TIME_BUDGET_EXCEEDED";
+    return snapshot();
   }
 
   private RunSnapshot failAgent(String reason) {
@@ -193,7 +250,8 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
   private RunSnapshot executeWithPersistentApproval() {
     int resultVersion = Workflow.getVersion("durable-result-v1", Workflow.DEFAULT_VERSION, 1);
     long deadline = Workflow.currentTimeMillis() + request.approvalTimeoutSeconds() * 1000L;
-    var prepared = activities.prepareAction(runId, operationId, request.service(), approvalId, deadline);
+    if (budget != null) deadline = Math.min(deadline, budget.deadlineEpochMillis());
+    var prepared = toolActivities().prepareAction(runId, operationId, request.service(), approvalId, deadline);
     reasonCode = prepared.reasonCode();
     if (prepared.status() != ActionStatus.APPROVAL_REQUIRED) return finishAction(prepared);
     state = RunState.WAITING_APPROVAL;
@@ -202,7 +260,7 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
       if (!received) break;
       // Signals wake the Workflow; only the independent approval record determines the decision.
       decision = null;
-      switch (activities.readApproval(approvalId)) {
+      switch (toolActivities().readApproval(approvalId)) {
         case APPROVE -> {
           state = RunState.RUNNING;
           if (resultVersion != Workflow.DEFAULT_VERSION) return executeWithDurableResult();
@@ -210,17 +268,18 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
         }
         case REJECT -> { state = RunState.REJECTED; return snapshot(); }
         case CANCELLED -> { state = RunState.CANCELLED; return snapshot(); }
-        case EXPIRED -> { state = RunState.TIMED_OUT; return snapshot(); }
+        case EXPIRED -> { if (timeExpired()) return timeBudgetEnd(); state = RunState.TIMED_OUT; return snapshot(); }
         case PENDING -> { /* Ignore untrusted or stale notifications without extending the deadline. */ }
       }
     }
+    if (timeExpired()) return timeBudgetEnd();
     state = RunState.TIMED_OUT;
     return snapshot();
   }
 
   private RunSnapshot executeWithDurableResult() {
     try {
-      var result = activities.executeDurableAction(operationId, request.service(), approvalId);
+      var result = toolActivities().executeDurableAction(operationId, request.service(), approvalId);
       if (result.status() != ActionStatus.RECONCILIATION_REQUIRED) return finishAction(result);
       reasonCode = result.reasonCode();
     } catch (ActivityFailure failure) {
@@ -235,6 +294,7 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
     while (true) {
       reconciliationRequested = false;
       try {
+        // Resolving an already-started write remains available after autonomous work expires.
         var result = activities.reconcileAction(operationId, request.service(), approvalId);
         if (result.status() != ActionStatus.RECONCILIATION_REQUIRED) return finishAction(result);
         reasonCode = result.reasonCode();
@@ -278,6 +338,6 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
     return new RunSnapshot(runId, state, request == null ? null : request.service(),
         approvalId, operationId, evidence, output, reasonCode,
         agentLoop ? new AgentProgress(modelSteps, AgentContext.MODEL_VERSION, AgentContext.PROMPT_VERSION,
-            AgentContext.TOOL_VERSION, AgentContext.RUNBOOK_VERSION, lastDecision, observation, conclusion) : null);
+            AgentContext.TOOL_VERSION, AgentContext.RUNBOOK_VERSION, lastDecision, observation, conclusion, budget) : null);
   }
 }

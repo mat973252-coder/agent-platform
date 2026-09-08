@@ -11,6 +11,7 @@
 Compose 校验/启动与 smoke 需要 `PLATFORM_DATABASE_PASSWORD`，并与已有审批数据库卷保持一致。
 CI 使用临时数据库口令，并执行 `python scripts/smoke.py --restart-approval-db`；此选项会重启本项目的审批数据库容器。
 smoke 需要相邻两个空闲端口，验证账本提交后强制终止 Worker、跨进程结果恢复及未知任务人工关闭。`platform.demo.failure-mode` 仅用于服务启动时注入测试故障，默认 `NONE`；不得作为业务 API 参数暴露。
+预算 smoke 还在 `SYNTHETIC_MODEL_RESPONSE_PAUSED` 日志观测点之后终止进程，检查未确认预留保留和重试单独计量。`platform.demo.model-failure-mode` 同样只允许启动时配置，默认 `NONE`。合成 token/cost 不作为供应商计量证据；不得按超时自动退还未知请求的预留。
 
 PR 描述包含具体行为、验收结果与尚未覆盖的边界。不得提交凭据、真实业务数据或日志。
 

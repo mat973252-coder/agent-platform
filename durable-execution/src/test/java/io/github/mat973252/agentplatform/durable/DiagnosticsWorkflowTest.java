@@ -359,7 +359,88 @@ class DiagnosticsWorkflowTest {
     return new AgentDecision("1", "FINISH", null, Map.of(), "Synthetic diagnostic conclusion");
   }
 
-  static class FakeOperations implements DiagnosticsActivities, AgentActivities {
+  @Test
+  void totalTimeBudgetIncludesApprovalWaitingAndLimitsTheApprovalDeadline() {
+    var result = workflow.execute(budgetRequest(2));
+    assertEquals(RunState.TIMED_OUT, result.state());
+    assertEquals("RUN_TIME_BUDGET_EXCEEDED", result.reasonCode());
+    assertNotNull(operations.budgetContext);
+    assertEquals(operations.budgetContext.deadlineEpochMillis(), operations.preparedDeadline);
+    assertTrue(operations.operationIds.isEmpty());
+  }
+
+  @Test
+  void modelRetryBackoffCannotExtendTheTotalTimeBudget() {
+    operations.modelFailures = 10;
+    var result = workflow.execute(budgetRequest(2));
+    assertEquals(RunState.TIMED_OUT, result.state());
+    assertEquals("RUN_TIME_BUDGET_EXCEEDED", result.reasonCode());
+    assertTrue(operations.decisionIds.size() <= 2);
+    assertTrue(operations.operationIds.isEmpty());
+  }
+
+  @Test
+  void approvalReadRetriesCannotStartAWriteAfterTheDeadline() {
+    operations.approvalReadFailures = 10;
+    decideAfter(Duration.ofSeconds(1), ApprovalDecision.APPROVE);
+    var result = workflow.execute(budgetRequest(2));
+    assertEquals(RunState.TIMED_OUT, result.state());
+    assertEquals("RUN_TIME_BUDGET_EXCEEDED", result.reasonCode());
+    assertTrue(operations.operationIds.isEmpty());
+  }
+
+  @Test
+  void anUnknownWriteRemainsResolvableAfterTheTimeBudgetExpires() {
+    operations.approvedStatus = ActionStatus.RECONCILIATION_REQUIRED;
+    decideAfter(Duration.ofSeconds(1), ApprovalDecision.APPROVE);
+    environment.registerDelayedCallback(Duration.ofSeconds(3), () -> {
+      assertEquals(RunState.RECONCILIATION_REQUIRED, workflow.snapshot().state());
+      assertEquals(1, operations.decisionIds.size());
+      operations.reconciled = new ActionResult(ActionStatus.CLOSED_UNKNOWN, "OPERATOR_CLOSED_UNKNOWN", null);
+      workflow.requestReconciliation();
+    });
+    assertEquals(RunState.CLOSED_UNKNOWN, workflow.execute(budgetRequest(2)).state());
+    assertTrue(operations.operationIds.isEmpty());
+  }
+
+  @Test
+  void lateConfirmationDoesNotRestartPlanningAfterTheBudgetExpires() {
+    operations.approvedStatus = ActionStatus.RECONCILIATION_REQUIRED;
+    decideAfter(Duration.ofSeconds(1), ApprovalDecision.APPROVE);
+    environment.registerDelayedCallback(Duration.ofSeconds(3), () -> {
+      operations.reconciled = new ActionResult(ActionStatus.EXECUTED, "LEDGER_CONFIRMED", "existing receipt");
+      workflow.requestReconciliation();
+    });
+    var result = workflow.execute(budgetRequest(2));
+    assertEquals(RunState.TIMED_OUT, result.state());
+    assertEquals("existing receipt", result.output());
+    assertEquals(1, operations.decisionIds.size());
+    assertEquals(0, operations.verificationReads);
+  }
+
+  @Test
+  void theRunPinsItsOwnModelStepLimit() {
+    operations.planScript.addAll(List.of(tool("evidence.read"), finish()));
+    var result = workflow.execute(new RunRequest("orders", 30, new RunBudget(1, 30, 10000, 10000)));
+    assertEquals("STEP_LIMIT_EXCEEDED", result.reasonCode());
+    assertEquals(1, operations.decisionIds.size());
+  }
+
+  @Test
+  void exhaustedTokensHaveASeparateReasonAndCannotReachTheTool() {
+    operations.budgetFailureReason = "TOKEN_BUDGET_EXCEEDED";
+    operations.planScript.add(finish());
+    var result = workflow.execute(budgetRequest(30));
+    assertEquals(RunState.FAILED, result.state());
+    assertEquals("TOKEN_BUDGET_EXCEEDED", result.reasonCode());
+    assertTrue(operations.operationIds.isEmpty());
+  }
+
+  private RunRequest budgetRequest(int seconds) {
+    return new RunRequest("orders", 30, new RunBudget(6, seconds, 100000, 1000000));
+  }
+
+  static class FakeOperations implements DiagnosticsActivities, AgentActivities, BudgetActivities {
     int readFailures;
     int readAttempts;
     int toolFailures;
@@ -381,6 +462,20 @@ class DiagnosticsWorkflowTest {
     int modelFailures;
     boolean invalidModelOutput;
     int verificationFailures;
+    int approvalReadFailures;
+    int approvalReads;
+    BudgetContext budgetContext;
+    long preparedDeadline;
+    String budgetFailureReason;
+
+    @Override
+    public void initializeBudget(BudgetContext context) { budgetContext = context; }
+
+    @Override
+    public AgentDecision planWithinBudget(AgentContext context, BudgetContext budget) {
+      if (budgetFailureReason != null) throw ApplicationFailure.newNonRetryableFailure("Budget rejected", budgetFailureReason);
+      return plan(context);
+    }
 
     @Override
     public String readRunbook(String service) { return "Synthetic fixed orders runbook"; }
@@ -430,11 +525,15 @@ class DiagnosticsWorkflowTest {
     @Override
     public ActionResult prepareAction(String runId, String operationId, String service, String approvalId, long expiresAt) {
       prepareCalls++;
+      preparedDeadline = expiresAt;
       return attemptAction(operationId, service, approvalId, false);
     }
 
     @Override
-    public ApprovalState readApproval(String approvalId) { return approvalState; }
+    public ApprovalState readApproval(String approvalId) {
+      if (++approvalReads <= approvalReadFailures) throw ApplicationFailure.newFailure("Read unavailable", "READ_UNAVAILABLE");
+      return approvalState;
+    }
 
     @Override
     public ActionResult executeApprovedAction(String operationId, String service, String approvalId) {

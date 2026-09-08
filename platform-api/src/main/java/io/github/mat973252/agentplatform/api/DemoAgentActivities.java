@@ -31,6 +31,14 @@ class DemoAgentActivities implements AgentActivities {
 
   @Override
   public AgentDecision plan(AgentContext context) {
+    try {
+      return codec.decode(response(context), context.service());
+    } catch (IllegalArgumentException invalid) {
+      throw ApplicationFailure.newNonRetryableFailure("Model decision rejected", "MODEL_OUTPUT_INVALID");
+    }
+  }
+
+  String response(AgentContext context) {
     requireOrders(context.service());
     if (!AgentContext.MODEL_VERSION.equals(context.modelVersion())
         || !AgentContext.PROMPT_VERSION.equals(context.promptVersion())
@@ -39,11 +47,7 @@ class DemoAgentActivities implements AgentActivities {
       throw ApplicationFailure.newNonRetryableFailure("Unsupported agent version", "AGENT_VERSION_UNSUPPORTED");
     }
     String fixture = context.verified() ? "finish" : context.writeCompleted() ? "verify" : "restart";
-    try {
-      return codec.decode(resource(fixture + "-v1.json"), context.service());
-    } catch (IllegalArgumentException invalid) {
-      throw ApplicationFailure.newNonRetryableFailure("Model decision rejected", "MODEL_OUTPUT_INVALID");
-    }
+    return resource(fixture + "-v1.json");
   }
 
   @Override

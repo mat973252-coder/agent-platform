@@ -1,6 +1,6 @@
 # Agent Platform 实施清单
 
-> 状态日期：2026-09-08。P0、P1.1、P1.2、P1.3 已交付。P2 首批决策契约与离线 Agent 循环已交付，本地 94 项测试及真实跨进程 CI 通过；下一步补完整时间/token/cost 预算，再接真实模型。
+> 状态日期：2026-09-09。P0、P1.1、P1.2、P1.3 已交付。P2 离线 Agent 循环已交付，本轮增加持久步骤/总时间/token/cost 预算；真实模型与供应商计量留在下一阶段。预算验证进度见 P2 记录。
 > 技术栈：Java 21、Spring Boot 4、Temporal Java SDK、PostgreSQL。
 > 原始完整平台规划保留在 `production-agent-platform-tech-stack-and-core-features.md`；本清单决定实际执行顺序。
 
@@ -110,14 +110,18 @@ P1.3 真实联调（2026-09-08）：[GitHub CI](https://github.com/mat973252-cod
 - [x] 模型输出使用明确 schema，工具名与参数必须经过服务端校验；本轮输出来自离线 JSON fixture。
 - [x] 区分模型错误、工具读取错误、策略拒绝、上下文不足、核验未确认和步数耗尽；写结果未知继续走 P1.3 核验。
 - [x] 实现有限步骤的 plan/execute/verify 循环，固定模型/提示词/工具/runbook 版本；当前为离线 fixture。
-- [ ] 增加最大步骤数、总时间、token/cost 预算；重试计入预算。
+- [x] 增加最大步骤数、总时间、token/cost 预算；重试计入预算。当前 token/cost 为显式离线模拟单位，真实供应商计量随模型接入另验。
 - [x] 已上报的模型 Activity 结果随 Temporal 历史保存，回放使用既有结果；未上报请求仍可能再次调用。
 - [x] 模型规划、证据读取、写工具和只读核验分属独立 Activity，不把循环整体重试。
 - [x] 检索/上下文先使用固定 runbook；向量库和 compaction 暂不接入。
 
 验收：离线模型 fixture 覆盖成功、非法工具、超预算和失败后重新规划；真实模型联调单独记录，CI 不依赖付费 API。
 
-P2 首批范围：模型可补查证据、申请一次受审批的 orders 重启、核验账本或结束诊断；未知写阻塞后续规划，不允许第二次写或跳过核验宣称成功。当前只有 6 次模型决策上限和各 Activity 的有限重试，完整总时间、token/cost 预算仍未完成。默认 fixture 不调用真实 LLM；Spring AI 接入留在后续。
+P2 首批范围：模型可补查证据、申请一次受审批的 orders 重启、核验账本或结束诊断；未知写阻塞后续规划，不允许第二次写或跳过核验宣称成功。默认 fixture 不调用真实 LLM；Spring AI 接入留在后续。
+
+预算实现（2026-09-09）：服务端冻结 6 步/900 秒/100000 token/1000000 microUSD 的默认限额，审批等待、Activity 重试及退避包含在总时限内。每次模型请求事务预留，成功结算与决策缓存同事务；未知响应保留全额预留，重试必须另有额度。新增只读 `/budget` 查询，原 P2 历史通过版本分支兼容。超时后仅保留未知写的只读核验/人工关闭，不能回滚已开始操作。计量模式固定 `OFFLINE_SIMULATED`，不是供应商账单。
+
+预算本地验证（2026-09-09）：核心、Activity、Workflow 先补测试观察预期失败后实现。Maven `verify` 117 项通过（core 12、adapter 28、Workflow 37、固定旧历史 12、API/预算/fixture/投递 28）。覆盖并发预算争抢、丢响应保留、落账后重试不重复调用、迟到响应各自计量且不覆盖首个结果、无效输出计量、审批总时限、退避提前耗尽、超时后未知写核验，以及 HTTP 伪造预算不能覆盖服务端限额。Temporal 为内存服务、业务库为 H2；Python smoke/历史 JSON 语法及 `git diff --check` 通过。Windows Docker 引擎管道仍不可用；新增跨进程 smoke 待 CI 验收后补录。
 
 本地验证（2026-09-08）：Maven `verify` 94 项通过（core 10、adapter 28、Workflow 30、固定旧历史 9、API/fixture/解析/投递 17）。覆盖非法模型输出、稳定决策 ID、模型重试耗尽、证据与核验读取失败后重新规划、步数上限、拒绝第二次写、拒绝未经核验的成功声明、未知结果阻塞、以及回放不调用模型/工具。Temporal 为内存服务、业务库为 H2；Python smoke 语法、打包 JSON 语法和 `git diff --check` 通过。
 

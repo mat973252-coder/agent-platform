@@ -9,6 +9,11 @@ server:
   address: 127.0.0.1
   port: 9090
 platform:
+  budget:
+    max-model-steps: 6
+    max-duration-seconds: 900
+    max-tokens: 100000
+    max-cost-microusd: 1000000
   security:
     operator-password: ${PLATFORM_OPERATOR_PASSWORD:}
     approver-password: ${PLATFORM_APPROVER_PASSWORD:}

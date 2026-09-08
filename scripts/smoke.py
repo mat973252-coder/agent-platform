@@ -52,11 +52,24 @@ def assert_agent_complete(snapshot):
     assert "No real service" in agent["conclusion"]
 
 
-def start(jar, port, output, delivery=True, failure_mode="NONE"):
+def budget(base, run_id):
+    return request(base, "GET", f"/api/runs/{run_id}/budget")
+
+
+def assert_budget_complete(base, run_id, held=0, attempts=3):
+    value = budget(base, run_id)
+    assert value["meteringMode"] == "OFFLINE_SIMULATED"
+    assert value["usedTokens"] == 2784 and value["usedCostMicrousd"] == 3000
+    assert value["reservedTokens"] == held and value["modelAttempts"] == attempts
+    assert value["reservedCostMicrousd"] == (5000 if held else 0)
+
+
+def start(jar, port, output, delivery=True, failure_mode="NONE", model_failure_mode="NONE"):
     process = subprocess.Popen(
         ["java", "-jar", str(jar), f"--server.port={port}",
          f"--platform.approval-delivery.enabled={str(delivery).lower()}",
-         f"--platform.demo.failure-mode={failure_mode}"],
+         f"--platform.demo.failure-mode={failure_mode}",
+         f"--platform.demo.model-failure-mode={model_failure_mode}"],
         stdout=output, stderr=subprocess.STDOUT,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
@@ -117,6 +130,9 @@ def main():
             assert pending["reasonCode"] == "DEMO_RESTART_REQUIRES_APPROVAL"
             assert pending["agent"]["modelSteps"] == 1
             assert pending["agent"]["lastDecision"]["tool"] == "ops.restart"
+            pending_budget = budget(base, run_id)
+            assert pending_budget["usedTokens"] == 928 and pending_budget["reservedTokens"] == 0
+            assert pending_budget["modelAttempts"] == 1
             approval_path = f"/api/runs/{run_id}/approval"
             original_record = request(base, "GET", approval_path)
             assert original_record["status"] == "PENDING"
@@ -127,6 +143,7 @@ def main():
             process = start(jar, args.port, output, delivery=False)
             recovered = await_state(base, run_id, "WAITING_APPROVAL")
             assert recovered == pending, "Persisted Run changed across Worker restart"
+            assert budget(base, run_id) == pending_budget
             assert request(base, "GET", approval_path) == original_record
             decision = {"approvalId": pending["approvalId"], "decision": "APPROVE"}
             request(base, "POST", approval_path, decision, 403, actor="operator")
@@ -143,6 +160,8 @@ def main():
             process = start(jar, args.port, output)
             complete = await_state(base, run_id, "SUCCEEDED")
             assert_agent_complete(complete)
+            assert_budget_complete(base, run_id)
+            assert budget(base, run_id)["deadlineEpochMillis"] == pending_budget["deadlineEpochMillis"]
             assert complete["output"].startswith("TEST_LEDGER_RESTART:orders")
             assert complete["reasonCode"] == "DEMO_RESTART_REQUIRES_APPROVAL"
             completed_record = request(base, "GET", approval_path)
@@ -192,6 +211,7 @@ def main():
             base = f"http://127.0.0.1:{args.port + 1}"
             complete = await_state(base, interrupted, "SUCCEEDED")
             assert_agent_complete(complete)
+            assert_budget_complete(base, interrupted)
             recovered = request(base, "GET", operation_path)
             assert recovered["receipt"] == operation["receipt"]
             assert recovered["execution"]["output"] == complete["output"]
@@ -224,6 +244,45 @@ def main():
             assert closed["execution"]["closedBy"] == "operator"
             print("PASS unknown outcome survives restart; manual audited closure without re-execution", flush=True)
             print("PASS offline plan/execute/verify loop and recorded decision survive Worker restarts", flush=True)
+
+            process.kill()
+            process.wait(timeout=15)
+            process = start(jar, args.port + 1, output, model_failure_mode="PAUSE_AFTER_MODEL_RESPONSE")
+            lost_response, _ = create(base)
+            deadline = time.monotonic() + 8
+            while True:
+                # The Run exists before its budget initialization Activity commits.
+                value = request(base, "GET", f"/api/runs/{lost_response}")
+                if value.get("agent") and value["agent"].get("budget"):
+                    try:
+                        reserved = budget(base, lost_response)
+                    except AssertionError as error:
+                        if "got 404:" not in str(error):
+                            raise
+                    else:
+                        paused = f"SYNTHETIC_MODEL_RESPONSE_PAUSED {lost_response}:model:1"
+                        if reserved["reservedTokens"] == 2560 and paused in (root / "var/smoke.log").read_text(encoding="utf-8"):
+                            assert reserved["modelAttempts"] == 1 and reserved["usedTokens"] == 0
+                            break
+                if time.monotonic() >= deadline:
+                    raise AssertionError("Model reservation was not observed before Activity timeout")
+                time.sleep(0.05)
+            first_pid = process.pid
+            process.kill()
+            process.wait(timeout=15)
+            process = start(jar, args.port, output)
+            base = f"http://127.0.0.1:{args.port}"
+            approval = await_state(base, lost_response, "WAITING_APPROVAL")
+            recovered_budget = budget(base, lost_response)
+            assert recovered_budget["reservedTokens"] == 2560 and recovered_budget["usedTokens"] == 928
+            assert recovered_budget["modelAttempts"] == 2
+            assert recovered_budget["deadlineEpochMillis"] == reserved["deadlineEpochMillis"]
+            request(base, "POST", f"/api/runs/{lost_response}/approval",
+                    {"approvalId": approval["approvalId"], "decision": "APPROVE"}, 202)
+            assert_agent_complete(await_state(base, lost_response, "SUCCEEDED"))
+            assert_budget_complete(base, lost_response, held=2560, attempts=4)
+            print(f"PASS model response crash: {lost_response}; Worker {first_pid} -> {process.pid}; "
+                  "unknown attempt remains reserved and retries are charged separately (simulated units)", flush=True)
         finally:
             if process is not None and process.poll() is None:
                 process.terminate()

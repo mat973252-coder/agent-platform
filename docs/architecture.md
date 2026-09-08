@@ -4,7 +4,7 @@
 
 当前实现单个诊断任务的可恢复执行流程，使用固定合成证据和数据库测试账本。
 P1.1 加入 AgentPermit4j 适配，P1.2 加入独立持久审批和本机账户身份验证，P1.3 加入持久执行权、结果复用和未知结果核验。测试账本具有真实数据库写入，但不重启真实服务；生产身份源、真实模型和生产业务工具仍在后续阶段，见根目录 TODO。
-P2 首批增加严格决策契约和离线 fixture 驱动的有限 Agent 循环；模型、提示词、工具和 runbook 版本显式记录。Spring AI/真实模型与完整时间、token/cost 预算尚未接入。
+P2 增加严格决策契约、离线 fixture 驱动的有限 Agent 循环与持久预算；模型、提示词、工具和 runbook 版本显式记录。Spring AI/真实模型尚未接入，token/cost 使用明确标记的合成计量。
 
 ## 模块
 
@@ -60,7 +60,7 @@ API 使用显式配置的本机 Basic 账户：operator 创建/查询/取消/核
 
 `reasonCode` 暴露最近一次工具治理或核验原因。管线拒绝作为终态返回；执行者获得执行权后的失败保守记为未知，不推断副作用未发生。Activity 本身抛出的错误仍按 Temporal 有限重试策略处理，但持久 guard 不允许再次调用工具。批准后若管线仍要求审批，本轮以 FAILED 结束，不自动生成无限审批循环。
 
-`agentpermit-action-v1`、`persistent-approval-v1`、`durable-result-v1` 和 `agent-loop-v1` 版本标记保留 P0/P1.1/P1.2/P1.3 历史的命令序列。旧 `executeAction`、`attemptAction`、`executeApprovedAction` Activity 继续注册，P1.2 的模拟执行不升级为新的账本操作，P1.3 旧 Run 不插入模型调用；不得在现有历史保留期内随意删除。9 份升级前生成的固定历史保护回放兼容性。
+`agentpermit-action-v1`、`persistent-approval-v1`、`durable-result-v1`、`agent-loop-v1` 和 `run-budget-v1` 版本标记保留升级前历史的命令序列。旧 `executeAction`、`attemptAction`、`executeApprovedAction` 和 `plan` Activity 继续注册；旧 Run 不插入后来增加的账本、模型或预算调用。不得在现有历史保留期内随意删除兼容路径。12 份升级前生成的固定历史保护回放兼容性。
 
 ## P2 首批 Agent 循环
 
@@ -84,7 +84,19 @@ API 使用显式配置的本机 Basic 账户：operator 创建/查询/取消/核
 
 核验 Activity 只检查原操作、审批指纹、服务及期待输出是否对应已提交账本回执，不重新获取写权限，不执行写工具。`FINISH` 在写入后必须以核验确认为前提。模型/核验后续失败不会清空先前写入结果，Run 的失败状态与 `/operation` 的成功记录可以同时存在，这不代表回滚。无写诊断可直接 FINISH；结论仍是模型 fixture 的文字，不作为真实服务健康证据。
 
-上限为 6 次模型决策，每次 Activity 最多 3 次尝试；重试 decision ID 不变。模型失败、无效输出、上下文不足、读取失败、核验未确认和步数耗尽有独立原因码或观察。已完成 Activity 的历史回放不会再调用模型；未上报结果的模型请求仍可能再次发生。本轮没有总运行时间、token/cost 预算或跨进程模型费用去重，后续单独验收。
+默认上限为 6 次模型决策，每次 Activity 最多 3 次尝试；重试 decision ID 不变。模型失败、无效输出、上下文不足、读取失败、核验未确认和预算耗尽有独立原因码或观察。已完成 Activity 的历史回放不会再调用模型。
+
+## Run 预算与模型计量
+
+服务端 `RunBudget` 在创建时写入 Workflow 输入，新路径初始化独立业务预算表；限额和 Workflow 计算的 deadline 不可在恢复时修改。默认 6 步、900 秒、100000 token、1000000 microUSD。HTTP 创建请求不能覆盖这些限额。`GET /api/runs/{runId}/budget` 返回固定限额、deadline、已用/预留 token 与 cost、物理模型尝试次数和计量模式；初始化尚未提交或旧 Run 无预算记录时返回 404。
+
+总时间包含上下文读取、模型、工具、审批等待及重试退避。各自主 Activity 的超时取原超时与剩余时间的较小值；审批过期时间也受总 deadline 限制，执行端数据库再次校验。时间耗尽返回 `TIMED_OUT / RUN_TIME_BUDGET_EXCEEDED`；下一次退避已无法放入剩余时间时允许提前以该原因结束。超时不能回滚已经开始的写入；未知写仍允许超时后只读核验或人工关闭，确认后不再开始新的模型/工具步骤，保留原回执。这是自主执行时限，不是未知结果人工处理的强制结束时间。
+
+`BudgetedPlanningActivities` 使用 `<run-id>:model:<step>` 和上下文 SHA-256 绑定决策，attempt 单独记录。每次实际模型请求前，在锁定预算行的事务中预留上限；`used + reserved` 必须同时满足 token 与 cost 限额。成功响应严格解析后与用量结算、缓存结果同事务提交；后续 Worker 读取确认结果不再请求模型或扣费。并发迟到响应各自结算，首个确认的有效输出保持不变。无效输出仍计入使用量。
+
+丢失响应、进程退出或无法确认结算时保留全部预留额度；同一 attempt 不重新获准，下一 attempt 必须另有足够预算。没有自动退还未知额度或按超时接管的入口。数据库落账但 Activity 结果未上报时重试复用缓存；模型响应尚未落账时可能再次请求，不能承诺供应商 exactly-once。
+
+当前 `meteringMode=OFFLINE_SIMULATED`：每次预留 2048 输入 + 512 输出 token、5000 microUSD，成功 fixture 使用 800 + 128 token、1000 microUSD。这些数值是故障验收单位，不是实际 token 统计或供应商账单。真实模型接入必须提供有界输入/输出额度、服务端输出上限、实际 usage 与版本化价格，另行验证。服务启动参数 `platform.demo.model-failure-mode` 支持 `FAIL_AFTER_MODEL_RESPONSE`、`PAUSE_AFTER_MODEL_RESPONSE`、`FAIL_AFTER_BUDGET_COMMIT`，默认 `NONE`，API 不能启用故障注入。
 
 模型/提示词/工具/runbook 版本随 Activity 输入持久记录，并在 `agent` 查询字段展示。版本升级必须保留旧内容和兼容分支，不能用同一版本覆盖 fixture。完整步骤查询视图和模型供应商适配后续实现。
 

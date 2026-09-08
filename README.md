@@ -4,7 +4,7 @@
 
 Java + Temporal 的持久化 Agent 执行基础项目。
 
-**当前阶段：P2 首批离线 Agent 循环，验收记录见 TODO。** 新 Run 使用固定 runbook 和模型 fixture，执行有限的“规划 → 工具 → 核验 → 结论”循环。重启仍通过真实 AgentPermit4j 管线、持久审批和数据库测试账本；它不重启真实服务。尚未接入真实模型、完整 token/费用预算、生产业务工具或生产身份系统。
+**当前阶段：P2 离线 Agent 循环与持久预算，验收记录见 TODO。** 新 Run 使用固定 runbook 和模型 fixture，执行受步骤、总时间及 token/cost 限额约束的“规划 → 工具 → 核验 → 结论”循环。重启仍通过真实 AgentPermit4j 管线、持久审批和数据库测试账本；它不重启真实服务。预算计量是合成单位，尚未接入真实模型、供应商账单、生产业务工具或生产身份系统。
 
 ## 技术与结构
 
@@ -84,6 +84,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:9090$($run.statusUrl)" -Headers $operat
 |---|---|
 | `POST /api/runs` | 202；返回稳定 runId 与状态地址 |
 | `GET /api/runs/{runId}` | 当前状态、合成证据、审批 ID、操作 ID、工具结果及 `agent` 规划进度/版本/核验观察/结论 |
+| `GET /api/runs/{runId}/budget` | 固定限额、截止时间、已用/预留 token 与 cost、模型尝试次数、计量模式；未初始化或旧 Run 无预算时 404 |
 | `GET /api/runs/{runId}/approval` | 原始绑定、指纹、过期时间、决定与审批/取消人 |
 | `GET /api/runs/pending-approvals` | 最早到期的最多 100 个待审批记录，重复查询不创建新审批单 |
 | `POST /api/runs/{runId}/approval` | 202 表示决定与投递意图已持久保存，最终状态通过 GET 确认 |
@@ -103,7 +104,11 @@ Invoke-RestMethod -Uri "http://127.0.0.1:9090$($run.statusUrl)" -Headers $operat
 
 默认 fixture 依次请求一次受审批重启、只读账本核验、结束诊断。工具结果反馈给下一次规划；测试也覆盖补查证据失败、核验读取失败后的重新规划。最多 6 次模型决策，每次 Activity 最多尝试 3 次；重试沿用稳定 decision ID。每个 Run 仍只允许一次逻辑重启，未知写结果阻塞在原核验流程中。
 
-`agent` 返回模型/提示词/工具/runbook 版本、模型步数、最近决策、核验观察和最终结论。已上报的模型结果由 Temporal 历史复用；模型请求尚未上报就中断时仍可能再次调用，这一阶段没有提供模型调用的跨进程费用去重。完整总时间、token/cost 预算后续实现。
+`agent` 返回模型/提示词/工具/runbook 版本、模型步数、最近决策、核验观察、最终结论和固定预算上下文。已上报的模型结果由 Temporal 历史复用；预算数据库已确认的结果也可跨 Worker 复用。响应未落账就中断时仍可能再次调用，未知尝试保留预留额度，重试另行预留。
+
+服务端配置 `platform.budget.max-model-steps`、`max-duration-seconds`、`max-tokens`、`max-cost-microusd` 默认分别为 6、900、100000、1000000；例如启动时追加 `--platform.budget.max-tokens=6000`。创建 Run 时冻结配置，HTTP 请求不能覆盖或提升额度，恢复时不重置。总时限包含审批等待和重试，耗尽后停止新自主步骤；已开始且结果未知的写入仍允许只读核验或人工关闭，不代表回滚。
+
+`/budget` 明确返回 `OFFLINE_SIMULATED`。每个物理模型尝试预留 2560 token / 5000 microUSD，成功 fixture 结算 928 token / 1000 microUSD；完整三步共 2784 / 3000。这是合成测试用量，不能当作真实模型消费。未知请求占用不自动释放，额度不足在请求前以 `TOKEN_BUDGET_EXCEEDED` 或 `COST_BUDGET_EXCEEDED` 拒绝。真实供应商 usage、价格与输出上限在接入模型时单独验收。
 
 写入后必须先通过 `ops.verify` 才允许 `FINISH`。核验只确认绑定的账本回执，不证明真实服务健康；模型宣称成功不能替代核验。任务在后续规划或核验失败时可能为 FAILED，但先前写入仍已完成，可用 `/operation` 查看；失败不等于回滚。
 
@@ -117,7 +122,7 @@ python scripts/smoke.py
 python scripts/smoke.py --restart-approval-db
 ```
 
-日志写入忽略的 `var/smoke.log`。脚本也检查等待期间已记录的模型决策跨 Worker 重启不变，以及恢复后完整执行规划、写入、核验、结论三个模型步骤。此验收与内存工作流测试分开，GitHub Actions 也会运行它。实际执行记录见 TODO。
+日志写入忽略的 `var/smoke.log`。脚本也检查等待期间已记录的模型决策和预算跨 Worker 重启不变，以及恢复后三个模型步骤的结算。另在模型响应落账前强制终止进程，验证未知预留跨进程保留、新尝试单独计量。此验收与内存工作流测试分开，GitHub Actions 也会运行它。实际执行记录见 TODO。
 
 2026-09-06 已在 [GitHub CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34025622000) 通过 PostgreSQL + Temporal 的 Worker 强制终止/恢复验收，并验证拒绝、取消、超时和重复请求保护。本机 Windows 的 Docker 引擎启动故障使本地容器联调尚未完成；Windows 本地 Maven 测试已通过。
 
@@ -127,7 +132,7 @@ python scripts/smoke.py --restart-approval-db
 
 同日的 [P1.3 CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34238414365) 已通过 72 项项目测试及上游 113 项测试，并实际验证账本提交后终止 Worker、新进程在另一端口恢复同一结果且仅一次写入，以及未知任务跨重启后的人工留痕关闭。当前 P1.3 验收范围为受控数据库账本。
 
-[P2 首批 CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34245518880) 已通过 94 项项目测试与上游 113 项测试，并验证已记录的离线规划决策跨 Worker 恢复、批准后完整完成规划/执行/核验循环，以及账本提交后中断仍只写一次。真实模型与完整预算尚未接入。
+[P2 首批 CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34245518880) 已通过 94 项项目测试与上游 113 项测试，并验证已记录的离线规划决策跨 Worker 恢复、批准后完整完成规划/执行/核验循环，以及账本提交后中断仍只写一次。该次验收尚未包含预算；后续预算验收见 TODO。
 
 ## 当前保证与限制
 
@@ -139,7 +144,7 @@ python scripts/smoke.py --restart-approval-db
 - 首个有效决定由条件 UPDATE 保存；审批消息只唤醒 Workflow，首次执行仍从数据库验证决定、审批人当前权限、指纹和过期时间。服务端关闭 `platform.policy.restart-enabled` 或更换审批人后，旧批准不能发起新执行；读取已有绑定的结果无需重新取得写权限。
 - 审批记录中的决定与 `delivered` 标记构成事务性 outbox，投递为至少一次；失败自动重投、重复消息不增加本流程的逻辑执行。通知入口目前是持久审批列表，无邮件/IM 通知渠道。
 - 取消在执行前的数据库 claim 边界之前获胜时撤销审批；执行已经开始时返回冲突，不能承诺回滚。取消另存操作人，保留原审批人记录。过期通过截止时间判定，数据库不靠定时任务把 `PENDING` 改写为 `EXPIRED`。
-- `Workflow.getVersion` 保留 P0/P1.1/P1.2/P1.3 命令序列，9 份固定旧历史参与回放。P1.3 旧 Run 不插入模型步骤，P1.2 旧 Run 不自动获得新的持久副作用保证。P0/P1.1 尚未决定的 Run 没有可信审批记录，应取消并用新 requestId 重建。
+- `Workflow.getVersion` 保留升级前命令序列，12 份固定旧历史参与回放。未带预算的旧 Run 不插入预算步骤，P1.3 旧 Run 不插入模型步骤，P1.2 旧 Run 不自动获得新的持久副作用保证。P0/P1.1 尚未决定的 Run 没有可信审批记录，应取消并用新 requestId 重建。
 - API、Temporal gRPC 与 UI 仅绑定 loopback；当前 Compose 是开发演示配置。
 - 取消不会回滚已经完成的外部操作。
 - 当前业务库保存审批、执行结果与测试账本，不是完整 Run/Step 查询视图；LLM/RAG、管理前端、SSE、Sandbox 和多 Runtime 在 TODO 分阶段列明。

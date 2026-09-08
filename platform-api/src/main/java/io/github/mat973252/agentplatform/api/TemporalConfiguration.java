@@ -15,11 +15,12 @@ import org.springframework.context.annotation.Configuration;
 class TemporalConfiguration {
   @Bean(initMethod = "start", destroyMethod = "shutdown")
   WorkerFactory workerFactory(WorkflowClient client, DemoOperations activities, DemoAgentActivities agentActivities,
+      BudgetedPlanningActivities budgetActivities,
       @Value("${platform.temporal.task-queue}") String taskQueue) {
     var factory = WorkerFactory.newInstance(client);
     var worker = factory.newWorker(taskQueue);
     worker.registerWorkflowImplementationTypes(DiagnosticsWorkflowImpl.class);
-    worker.registerActivitiesImplementations(activities, agentActivities);
+    worker.registerActivitiesImplementations(activities, agentActivities, budgetActivities);
     return factory;
   }
 

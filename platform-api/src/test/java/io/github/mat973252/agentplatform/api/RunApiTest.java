@@ -36,6 +36,8 @@ class RunApiTest {
   void unauthenticatedRequestsAreRejected() throws Exception {
     var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/runs/missing")).build();
     assertEquals(401, http.send(request, HttpResponse.BodyHandlers.ofString()).statusCode());
+    var budget = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/runs/missing/budget")).build();
+    assertEquals(401, http.send(budget, HttpResponse.BodyHandlers.ofString()).statusCode());
   }
 
   @Test
@@ -48,6 +50,12 @@ class RunApiTest {
     assertTrue(awaitState(runId, "WAITING_APPROVAL").body()
         .contains("\"reasonCode\":\"DEMO_RESTART_REQUIRES_APPROVAL\""));
     assertEquals(409, create(requestId, "orders").statusCode());
+    var pendingBudget = send("GET", "/api/runs/" + runId + "/budget", "");
+    assertEquals(200, pendingBudget.statusCode());
+    assertTrue(pendingBudget.body().contains("\"usedTokens\":928"));
+    assertTrue(pendingBudget.body().contains("\"reservedTokens\":0"));
+    assertTrue(pendingBudget.body().contains("\"modelAttempts\":1"));
+    assertTrue(pendingBudget.body().contains("\"meteringMode\":\"OFFLINE_SIMULATED\""));
     var approval = send("POST", "/api/runs/" + runId + "/approval",
         "{\"approvalId\":\"" + runId + ":approval:restart\",\"decision\":\"APPROVE\"}");
     assertEquals(202, approval.statusCode());
@@ -58,6 +66,12 @@ class RunApiTest {
     assertTrue(finished.body().contains("\"modelVersion\":\"offline-diagnostics-v1\""));
     assertTrue(finished.body().contains("VERIFICATION_CONFIRMED"));
     assertTrue(finished.body().contains("No real service was restarted or health-checked"));
+    var budget = sendAs("approver", "GET", "/api/runs/" + runId + "/budget", "", true);
+    assertEquals(200, budget.statusCode());
+    assertTrue(budget.body().contains("\"usedTokens\":2784"));
+    assertTrue(budget.body().contains("\"usedCostMicrousd\":3000"));
+    assertTrue(budget.body().contains("\"reservedTokens\":0"));
+    assertTrue(budget.body().contains("\"modelAttempts\":3"));
     assertEquals(409, create(requestId, "orders").statusCode(), "Closed IDs cannot be reused");
   }
 
@@ -88,6 +102,7 @@ class RunApiTest {
   @Test
   void unknownRunsReturnNotFound() throws Exception {
     assertEquals(404, send("GET", "/api/runs/missing-" + UUID.randomUUID(), "").statusCode());
+    assertEquals(404, send("GET", "/api/runs/missing-" + UUID.randomUUID() + "/budget", "").statusCode());
   }
 
   @Test
