@@ -6,6 +6,8 @@ import io.github.mat973252.agentpermit.core.RiskAssessment;
 import io.github.mat973252.agentpermit.core.RiskLevel;
 import io.github.mat973252.agentpermit.execution.InMemoryResultIdempotencyGuard;
 import io.github.mat973252.agentpermit.execution.ResultDecisionPipeline;
+import io.github.mat973252.agentpermit.execution.ResultIdempotencyGuard;
+import io.github.mat973252.agentpermit.execution.ResultToolExecutor;
 import io.github.mat973252.agentplatform.core.ActionResult;
 import io.github.mat973252.agentplatform.core.ActionStatus;
 
@@ -35,18 +37,28 @@ public final class PersistentGovernance {
   }
 
   public ActionResult restart(String operationId, String service, String approvalId) {
-    var pipeline = new ResultDecisionPipeline(new ResultDecisionPipeline.Dependencies(
+    var pipeline = pipeline(guard, invocation -> {
+      store.claim(approvalId, fingerprinter.fingerprint(invocation).value(), approver);
+      return "SIMULATED_RESTART:" + service + ";operationId=" + operationId;
+    });
+    return new AgentPermitAdapter(pipeline).restart(operationId, service, approvalId);
+  }
+
+  ResultDecisionPipeline pipeline(ResultIdempotencyGuard idempotency, ResultToolExecutor executor) {
+    return new ResultDecisionPipeline(new ResultDecisionPipeline.Dependencies(
         AgentPermitAdapter::validate, invocation -> invocation,
         invocation -> new GateDecision(restartEnabled, restartEnabled ? "LOCAL_SERVICE_ALLOWED" : "RESTART_DISABLED"),
         invocation -> new RiskAssessment(RiskLevel.HIGH, "DEMO_RESTART_REQUIRES_APPROVAL"),
         (id, invocation) -> verify(id, fingerprinter.fingerprint(invocation).value()),
-        guard,
-        invocation -> {
-          store.claim(approvalId, fingerprinter.fingerprint(invocation).value(), approver);
-          return "SIMULATED_RESTART:" + service + ";operationId=" + operationId;
-        }, event -> LOG.log(System.Logger.Level.DEBUG, "AgentPermit {0}: {1}",
+        idempotency, executor, event -> LOG.log(System.Logger.Level.DEBUG, "AgentPermit {0}: {1}",
             event.decision().outcome(), event.decision().reasonCode())));
-    return new AgentPermitAdapter(pipeline).restart(operationId, service, approvalId);
+  }
+
+  void consume(String approvalId, String fingerprint) { store.consume(approvalId, fingerprint, approver); }
+
+  boolean matchesApproval(String approvalId, String operationId, String fingerprint) {
+    var record = store.get(approvalId);
+    return record.operationId().equals(operationId) && record.fingerprint().equals(fingerprint);
   }
 
   public boolean canApprove(String actor, String service) {

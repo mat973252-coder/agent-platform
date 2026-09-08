@@ -4,7 +4,7 @@
 
 Java + Temporal 的持久化 Agent 执行基础项目。
 
-**当前阶段：P1.2 持久审批已实现，验收记录见 TODO。** 固定诊断工作流的模拟重启通过真实 AgentPermit4j 管线；审批记录保存在独立 PostgreSQL，API 验证本机账户角色，决定落库后可靠投递给 Temporal。尚未接入真实模型、真实写工具、生产身份系统或跨 Worker 的副作用幂等。
+**当前阶段：P1.3 持久执行结果与未知结果处理，验收记录见 TODO。** 固定诊断工作流通过真实 AgentPermit4j 管线，审批与执行记录保存在独立 PostgreSQL。受控下游将每次逻辑操作写入数据库测试账本，支持跨 Worker 结果复用和只读核对；它不重启真实服务。尚未接入真实模型、生产业务工具或生产身份系统。
 
 ## 技术与结构
 
@@ -29,7 +29,7 @@ Linux/macOS：先运行 `python3 scripts/bootstrap-agentpermit.py`，再运行 `
 
 依赖锁定在 [`.mvn/agentpermit.lock.json`](.mvn/agentpermit.lock.json)：公开提交 `c33911c595e5718b144d2bdb939bb3e23e17c909`、版本 `0.2.0`，下载后校验 SHA-256。脚本构建必要模块并运行其测试；主项目使用 `var/maven-repository` 隔离仓库，不依赖其他 checkout 或用户全局 Maven 缓存。锁定更新后重新运行脚本；不自动跟随远端 main 或本机未发布分支。
 
-项目测试覆盖领域校验、真实 AgentPermit 决策、审批绑定/过期/取消竞态、工作流分支、Activity 重试、消息重投、旧历史回放和 HTTP 身份权限。测试中的 Temporal 使用内存服务，审批库使用 H2；真实 PostgreSQL 联调独立验收。依赖自身的 113 项测试单独记录。
+项目测试覆盖领域校验、真实 AgentPermit 决策、审批绑定/过期/取消竞态、独立数据库连接抢占执行权、下游去重、未知结果及人工关闭、工作流分支、Activity 重试、消息重投、旧历史回放和 HTTP 身份权限。测试中的 Temporal 使用内存服务，业务库使用 H2；真实 PostgreSQL 联调独立验收。依赖自身的 113 项测试单独记录。
 
 ## 本地启动
 
@@ -47,7 +47,7 @@ java -jar platform-api/target/platform-api-0.1.0-SNAPSHOT.jar
 - Temporal UI：`http://127.0.0.1:8233`；gRPC：`127.0.0.1:7233`。
 - 审批 PostgreSQL：`127.0.0.1:5434`，独立数据库 `agent_platform`、独立卷 `approval-data`；Flyway 自动迁移业务表，不读写 Temporal 内部表。
 - Temporal 的 PostgreSQL 无宿主机端口，其 Compose 固定口令仅供本机合成演示使用。
-- `operator` 可创建/查询/取消；`approver` 可查询/审批。用户名可通过 `platform.security.operator-username`、`platform.security.approver-username` 覆盖。未配置有效口令时启动失败，不启用默认账户口令。
+- `operator` 可创建/查询/取消及核对、关闭未知任务；`approver` 可查询/审批。用户名可通过 `platform.security.operator-username`、`platform.security.approver-username` 覆盖。未配置有效口令时启动失败，不启用默认账户口令。
 - `docker compose down` 停止服务并保留命名卷；本项目启动脚本不自动删除数据库数据。
 - 覆盖端口示例：`java -jar platform-api/target/platform-api-0.1.0-SNAPSHOT.jar --server.port=9092`。
 
@@ -86,6 +86,8 @@ Invoke-RestMethod -Uri "http://127.0.0.1:9090$($run.statusUrl)" -Headers $operat
 | `GET /api/runs/pending-approvals` | 最早到期的最多 100 个待审批记录，重复查询不创建新审批单 |
 | `POST /api/runs/{runId}/approval` | 202 表示决定与投递意图已持久保存，最终状态通过 GET 确认 |
 | `POST /api/runs/{runId}/cancel` | 202 表示取消已请求 |
+| `GET /api/runs/{runId}/operation` | 持久执行状态、下游回执及当前测试服务 generation |
+| `POST /api/runs/{runId}/reconciliation` | operator 提交 `{"action":"CHECK"}` 只读核对，或 `{"action":"CLOSE","reason":"核验说明"}` 人工关闭未知任务；202 表示已持久保存投递意图 |
 
 非法输入为 400，未认证为 401，角色不允许或缺少写请求头为 403，未知 Run 为 404，重复 requestId、冲突/过期审批或不可取消操作为 409。`requestId` 最长 64 个字符，仅支持字母、数字、下划线和连字符；已完成任务的 ID 也不能复用。相同审批人重复提交同一有效决定返回 202；相反决定不能覆盖先前决定。
 
@@ -95,7 +97,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:9090$($run.statusUrl)" -Headers $operat
 
 ## 跨进程恢复验收
 
-需要运行中的 Compose、匹配的 `PLATFORM_DATABASE_PASSWORD` 和 Python 3 标准库。脚本使用临时账户口令启动 API（默认 9091），先验证等待中的 Run 与审批记录跨 Worker 重启恢复；再关闭消息投递、保存审批、强制结束进程，重启后由 outbox 补投并继续同一 Run。随后检查拒绝、取消、超时和重复请求。结束时只停止脚本创建的应用进程。
+需要运行中的 Compose、匹配的 `PLATFORM_DATABASE_PASSWORD` 和 Python 3 标准库。脚本使用临时账户口令启动 API（默认需要空闲端口 9091 和 9092），验证等待审批、审批 outbox 与数据库重启恢复，以及拒绝、取消、超时和重复请求。随后在测试账本已提交、Activity 尚未返回时强制结束 Worker，由另一个端口上的新 Worker 恢复，核对回执相同且 generation 只增加一次；最后验证无回执的未知任务跨重启保留，并由 operator 留痕关闭。结束时只停止脚本创建的应用进程。
 
 ```powershell
 python scripts/smoke.py
@@ -114,15 +116,17 @@ python scripts/smoke.py --restart-approval-db
 ## 当前保证与限制
 
 - Temporal 恢复已记录的执行结果；Activity 在完成结果尚未上报时仍可能重试。
-- `operationId` 作为 AgentPermit 的幂等键，贯穿同一逻辑操作的重试；进程内可复用结果，跨 Worker/进程的副作用幂等尚未实现。
+- `operationId` 作为 AgentPermit 的幂等键，贯穿同一逻辑操作的重试；数据库唯一约束选出一个执行者，审批消费与执行权在同一事务提交。已确认结果可跨 Worker 读取；未确认执行不做超时接管。
+- 测试账本在独立事务内递增 generation 并按 operation ID 保存唯一回执，返回 `TEST_LEDGER_RESTART:orders`。保证依赖业务数据库持久性和这个受控下游的去重契约，不代表任意外部服务具备 exactly-once。
+- 无法确认的执行进入 `RECONCILIATION_REQUIRED`，只读取下游，不重做工具。`CLOSED_UNKNOWN` 保存关闭人及原因，表示人工结束核验，不证明无副作用，也不是失败确认、取消或回滚。迟到结果不能覆盖关闭状态。
 - 审批单唯一绑定 Run、Step、操作 ID、工具、资源、规范化调用指纹及固定截止时间；重试不延长有效期。指纹还包含服务端主体、租户、环境及参数。
-- 首个有效决定由条件 UPDATE 保存；审批消息只唤醒 Workflow，执行仍从数据库验证决定、审批人当前权限、指纹和过期时间。服务端关闭 `platform.policy.restart-enabled` 或更换审批人后，旧批准不能执行。
+- 首个有效决定由条件 UPDATE 保存；审批消息只唤醒 Workflow，首次执行仍从数据库验证决定、审批人当前权限、指纹和过期时间。服务端关闭 `platform.policy.restart-enabled` 或更换审批人后，旧批准不能发起新执行；读取已有绑定的结果无需重新取得写权限。
 - 审批记录中的决定与 `delivered` 标记构成事务性 outbox，投递为至少一次；失败自动重投、重复消息不增加本流程的逻辑执行。通知入口目前是持久审批列表，无邮件/IM 通知渠道。
 - 取消在执行前的数据库 claim 边界之前获胜时撤销审批；执行已经开始时返回冲突，不能承诺回滚。取消另存操作人，保留原审批人记录。过期通过截止时间判定，数据库不靠定时任务把 `PENDING` 改写为 `EXPIRED`。
-- `Workflow.getVersion` 保留 P0/P1.1 命令序列，4 份固定旧历史参与回放。旧 Activity 仍使用明确隔离的本机模拟治理。旧版尚未决定的 Run 没有可信审批记录，应取消并用新 requestId 重建；不会自动把旧信号升级为可信审批。
+- `Workflow.getVersion` 保留 P0/P1.1/P1.2 命令序列，6 份固定旧历史参与回放。旧 Activity 仍使用明确隔离的模拟执行；P1.2 旧 Run 不自动获得新的持久副作用保证。P0/P1.1 尚未决定的 Run 没有可信审批记录，应取消并用新 requestId 重建。
 - API、Temporal gRPC 与 UI 仅绑定 loopback；当前 Compose 是开发演示配置。
 - 取消不会回滚已经完成的外部操作。
-- 当前业务库仅保存审批，不是完整 Run/Step 查询视图；LLM/RAG、管理前端、SSE、Sandbox 和多 Runtime 在 TODO 分阶段列明。
+- 当前业务库保存审批、执行结果与测试账本，不是完整 Run/Step 查询视图；LLM/RAG、管理前端、SSE、Sandbox 和多 Runtime 在 TODO 分阶段列明。
 - 原始平台规划描述最终愿景，不是当前能力清单。
 
 ## License

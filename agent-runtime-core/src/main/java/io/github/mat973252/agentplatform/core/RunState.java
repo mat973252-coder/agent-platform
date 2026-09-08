@@ -4,6 +4,8 @@ public enum RunState {
   CREATED,
   RUNNING,
   WAITING_APPROVAL,
+  RECONCILIATION_REQUIRED,
+  CLOSED_UNKNOWN,
   SUCCEEDED,
   DENIED,
   REJECTED,
@@ -12,6 +14,6 @@ public enum RunState {
   FAILED;
 
   public boolean terminal() {
-    return this != CREATED && this != RUNNING && this != WAITING_APPROVAL;
+    return this != CREATED && this != RUNNING && this != WAITING_APPROVAL && this != RECONCILIATION_REQUIRED;
   }
 }

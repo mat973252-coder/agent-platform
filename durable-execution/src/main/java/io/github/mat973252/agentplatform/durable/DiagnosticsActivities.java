@@ -24,4 +24,10 @@ public interface DiagnosticsActivities {
 
   @ActivityMethod
   ActionResult executeApprovedAction(String operationId, String service, String approvalId);
+
+  @ActivityMethod
+  ActionResult executeDurableAction(String operationId, String service, String approvalId);
+
+  @ActivityMethod
+  ActionResult reconcileAction(String operationId, String service, String approvalId);
 }

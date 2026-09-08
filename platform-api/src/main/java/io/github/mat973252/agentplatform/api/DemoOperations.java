@@ -7,6 +7,7 @@ import io.github.mat973252.agentplatform.core.ApprovalState;
 import io.github.mat973252.agentplatform.permit.LocalDemoGovernance;
 import io.github.mat973252.agentplatform.permit.JdbcApprovalStore;
 import io.github.mat973252.agentplatform.permit.PersistentGovernance;
+import io.github.mat973252.agentplatform.permit.DurableGovernance;
 import io.temporal.failure.ApplicationFailure;
 import org.springframework.stereotype.Component;
 
@@ -15,10 +16,12 @@ class DemoOperations implements DiagnosticsActivities {
   private final LocalDemoGovernance governance = new LocalDemoGovernance();
   private final PersistentGovernance persistent;
   private final JdbcApprovalStore approvals;
+  private final DurableGovernance durable;
 
-  DemoOperations(PersistentGovernance persistent, JdbcApprovalStore approvals) {
+  DemoOperations(PersistentGovernance persistent, JdbcApprovalStore approvals, DurableGovernance durable) {
     this.persistent = persistent;
     this.approvals = approvals;
+    this.durable = durable;
   }
 
   @Override
@@ -52,5 +55,15 @@ class DemoOperations implements DiagnosticsActivities {
   @Override
   public ActionResult executeApprovedAction(String operationId, String service, String approvalId) {
     return persistent.restart(operationId, service, approvalId);
+  }
+
+  @Override
+  public ActionResult executeDurableAction(String operationId, String service, String approvalId) {
+    return durable.restart(operationId, service, approvalId);
+  }
+
+  @Override
+  public ActionResult reconcileAction(String operationId, String service, String approvalId) {
+    return durable.reconcile(operationId, service, approvalId);
   }
 }

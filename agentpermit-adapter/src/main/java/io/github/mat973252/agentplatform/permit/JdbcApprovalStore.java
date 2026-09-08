@@ -109,6 +109,15 @@ public final class JdbcApprovalStore {
     if (changed == 0) throw new IllegalStateException("Approval was revoked or expired before execution");
   }
 
+  void consume(String id, String fingerprint, String approver) {
+    int changed = jdbc.update("""
+        UPDATE platform_approvals SET execution_started=TRUE
+        WHERE approval_id=? AND fingerprint=? AND decided_by=? AND status='APPROVE'
+          AND expires_at>? AND execution_started=FALSE
+        """, id, fingerprint, approver, clock.millis());
+    if (changed == 0) throw new IllegalStateException("Approval cannot be consumed for a new execution");
+  }
+
   public List<ApprovalRecord> undelivered() {
     return jdbc.query("SELECT * FROM platform_approvals WHERE status<>'PENDING' AND delivered=FALSE ORDER BY COALESCE(cancelled_at,decided_at) LIMIT 100", ROW);
   }

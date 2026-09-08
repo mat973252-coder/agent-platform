@@ -181,6 +181,48 @@ class DiagnosticsWorkflowTest {
     });
   }
 
+  @Test
+  void anUnknownExecutionIsConfirmedOnlyByTheReconciliationActivity() {
+    operations.approvedStatus = ActionStatus.RECONCILIATION_REQUIRED;
+    operations.reconciled = new ActionResult(ActionStatus.EXECUTED, "LEDGER_CONFIRMED", "existing receipt");
+    decideAfter(Duration.ofSeconds(1), ApprovalDecision.APPROVE);
+    var result = workflow.execute(new RunRequest("orders", 30));
+    assertEquals(RunState.SUCCEEDED, result.state());
+    assertEquals("existing receipt", result.output());
+    assertEquals(1, operations.reconciliationReads);
+    assertTrue(operations.operationIds.isEmpty());
+  }
+
+  @Test
+  void aReconciliationSignalCannotInventAResultOrCloseAnUnknownRun() {
+    operations.approvedStatus = ActionStatus.RECONCILIATION_REQUIRED;
+    decideAfter(Duration.ofSeconds(1), ApprovalDecision.APPROVE);
+    environment.registerDelayedCallback(Duration.ofSeconds(2), () -> {
+      assertEquals(RunState.RECONCILIATION_REQUIRED, workflow.snapshot().state());
+      workflow.requestReconciliation();
+    });
+    environment.registerDelayedCallback(Duration.ofSeconds(3), () -> {
+      assertEquals(RunState.RECONCILIATION_REQUIRED, workflow.snapshot().state());
+      operations.reconciled = new ActionResult(ActionStatus.CLOSED_UNKNOWN, "OPERATOR_CLOSED_UNKNOWN", null);
+      workflow.requestReconciliation();
+    });
+    assertEquals(RunState.CLOSED_UNKNOWN, workflow.execute(new RunRequest("orders", 30)).state());
+    assertTrue(operations.operationIds.isEmpty());
+  }
+
+  @Test
+  void exhaustedExecutionAttemptsPreserveTheUnknownOutcomeForManualResolution() {
+    operations.durableFailures = 10;
+    decideAfter(Duration.ofSeconds(1), ApprovalDecision.APPROVE);
+    environment.registerDelayedCallback(Duration.ofSeconds(10), () -> {
+      assertEquals(RunState.RECONCILIATION_REQUIRED, workflow.snapshot().state());
+      operations.reconciled = new ActionResult(ActionStatus.CLOSED_UNKNOWN, "OPERATOR_CLOSED_UNKNOWN", null);
+      workflow.requestReconciliation();
+    });
+    assertEquals(RunState.CLOSED_UNKNOWN, workflow.execute(new RunRequest("orders", 30)).state());
+    assertEquals(3, operations.durableAttempts);
+  }
+
   static class FakeOperations implements DiagnosticsActivities {
     int readFailures;
     int readAttempts;
@@ -188,6 +230,10 @@ class DiagnosticsWorkflowTest {
     ActionStatus initialStatus = ActionStatus.APPROVAL_REQUIRED;
     ActionStatus approvedStatus = ActionStatus.EXECUTED;
     ApprovalState approvalState = ApprovalState.PENDING;
+    int durableFailures;
+    int durableAttempts;
+    int reconciliationReads;
+    ActionResult reconciled = new ActionResult(ActionStatus.RECONCILIATION_REQUIRED, "OUTCOME_UNKNOWN", null);
     final List<String> operationIds = new ArrayList<>();
 
     @Override
@@ -225,6 +271,18 @@ class DiagnosticsWorkflowTest {
     @Override
     public ActionResult executeApprovedAction(String operationId, String service, String approvalId) {
       return attemptAction(operationId, service, approvalId, true);
+    }
+
+    @Override
+    public ActionResult executeDurableAction(String operationId, String service, String approvalId) {
+      if (++durableAttempts <= durableFailures) throw ApplicationFailure.newFailure("Synthetic lost response", "LOST_RESPONSE");
+      return attemptAction(operationId, service, approvalId, true);
+    }
+
+    @Override
+    public ActionResult reconcileAction(String operationId, String service, String approvalId) {
+      reconciliationReads++;
+      return reconciled;
     }
   }
 }

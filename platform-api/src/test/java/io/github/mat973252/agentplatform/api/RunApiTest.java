@@ -52,7 +52,7 @@ class RunApiTest {
         "{\"approvalId\":\"" + runId + ":approval:restart\",\"decision\":\"APPROVE\"}");
     assertEquals(202, approval.statusCode());
     var finished = awaitState(runId, "SUCCEEDED");
-    assertTrue(finished.body().contains("SIMULATED_RESTART:orders"));
+    assertTrue(finished.body().contains("TEST_LEDGER_RESTART:orders"));
     assertTrue(finished.body().contains("\"reasonCode\":\"DEMO_RESTART_REQUIRES_APPROVAL\""));
     assertEquals(409, create(requestId, "orders").statusCode(), "Closed IDs cannot be reused");
   }

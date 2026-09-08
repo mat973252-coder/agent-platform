@@ -16,6 +16,9 @@ public interface DiagnosticsWorkflow {
   @SignalMethod
   void submitApproval(ApprovalCommand command);
 
+  @SignalMethod
+  void requestReconciliation();
+
   @QueryMethod
   RunSnapshot snapshot();
 }

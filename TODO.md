@@ -1,6 +1,6 @@
 # Agent Platform 实施清单
 
-> 状态日期：2026-09-08。P0、P1.1、P1.2 已交付，项目测试及真实数据库恢复 CI 均通过；下一阶段为 P1.3 跨 Worker 副作用幂等与未知结果处理。
+> 状态日期：2026-09-08。P0、P1.1、P1.2 已交付；P1.3 持久执行与未知结果处理已实现、本地 72 项测试通过，真实 PostgreSQL 进程中断联调待 CI 验收。
 > 技术栈：Java 21、Spring Boot 4、Temporal Java SDK、PostgreSQL。
 > 原始完整平台规划保留在 `production-agent-platform-tech-stack-and-core-features.md`；本清单决定实际执行顺序。
 
@@ -72,7 +72,7 @@
 
 验收：用同一工具的允许、拒绝、待审批三种 fixture 证明调用没有绕过 AgentPermit；拒绝路径副作用为零。
 
-P1.1 历史边界：接入真实 AgentPermit 管线和指纹校验，使用内存模拟审批。P1.2 已为新 Run 替换持久审批装配；`LocalDemoGovernance` 只保留在旧历史兼容路径，结果幂等仍仅在进程内生效。
+P1.1 历史边界：接入真实 AgentPermit 管线和指纹校验，使用内存模拟审批。P1.2 为新 Run 替换持久审批装配；`LocalDemoGovernance` 只保留在旧历史兼容路径。旧版结果幂等仅在进程内生效，P1.3 新 Run 使用持久执行记录。
 
 ### P1.2 审批契约
 
@@ -85,7 +85,7 @@ P1.1 历史边界：接入真实 AgentPermit 管线和指纹校验，使用内�
 
 验收：变更已批准参数、资源或身份后零执行；重复/乱序消息不会增加副作用。
 
-本轮边界：审批 PostgreSQL 独立于 Temporal 内部库，Flyway 管理业务表；生产 SSO/多租户资源授权仍在 P5。旧版等待 Run 没有可信审批记录，需取消后用新 ID 重建。执行前 claim 不提供跨 Worker 结果复用或未知结果核验，P1.3 保持未完成。
+P1.2 历史边界：审批 PostgreSQL 独立于 Temporal 内部库，Flyway 管理业务表；生产 SSO/多租户资源授权仍在 P5。P0/P1.1 等待 Run 没有可信审批记录，需取消后用新 ID 重建。P1.2 的旧执行路径不提供跨 Worker 结果复用，P1.3 通过版本标记为新 Run 引入新路径。
 
 ### P1.3 幂等与未知结果
 
@@ -97,6 +97,10 @@ P1.1 历史边界：接入真实 AgentPermit 管线和指纹校验，使用内�
 - [ ] 给补偿操作定义独立 ID、前置条件和失败状态，不把不可逆动作标为可回滚。
 
 验收：并发重试、Worker 丢失及响应丢失都能说明副作用次数与最终状态；公开说明保证依赖和失效条件。
+
+范围：受控 PostgreSQL 测试账本具有真实写入及唯一回执，但不重启真实服务。未知执行不接管、不盲目重试；人工关闭不证明无副作用。当前 restart 为 IRREVERSIBLE，无补偿执行器；独立补偿 ID、前置条件及失败/未知状态契约见架构文档，不能计为已实现可回滚工具。
+
+P1.3 本地验证（2026-09-08）：Maven `verify` 72 项通过（core 8、adapter 28、Workflow 18、旧历史 6、HTTP/投递 12）。新增测试覆盖独立连接执行权争抢与下游去重、响应丢失、未知结果禁止重做、过期后读取确认结果、人工关闭保留审计、迟到结果和旧投递确认。Temporal 为内存服务、业务库为 H2；Python smoke 语法检查通过。真实 PostgreSQL + Temporal 的账本提交后 kill/新 Worker 恢复验收待 CI 结果。
 
 ## P2：真实 Agent 执行循环
 

@@ -37,6 +37,7 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
   private String reasonCode;
   private ApprovalDecision decision;
   private boolean persistentApproval;
+  private boolean reconciliationRequested;
 
   @Override
   public RunSnapshot execute(RunRequest input) {
@@ -89,6 +90,7 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
   }
 
   private RunSnapshot executeWithPersistentApproval() {
+    int resultVersion = Workflow.getVersion("durable-result-v1", Workflow.DEFAULT_VERSION, 1);
     long deadline = Workflow.currentTimeMillis() + request.approvalTimeoutSeconds() * 1000L;
     var prepared = activities.prepareAction(runId, operationId, request.service(), approvalId, deadline);
     reasonCode = prepared.reasonCode();
@@ -102,6 +104,7 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
       switch (activities.readApproval(approvalId)) {
         case APPROVE -> {
           state = RunState.RUNNING;
+          if (resultVersion != Workflow.DEFAULT_VERSION) return executeWithDurableResult();
           return finishAction(activities.executeApprovedAction(operationId, request.service(), approvalId));
         }
         case REJECT -> { state = RunState.REJECTED; return snapshot(); }
@@ -114,15 +117,51 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
     return snapshot();
   }
 
+  private RunSnapshot executeWithDurableResult() {
+    try {
+      var result = activities.executeDurableAction(operationId, request.service(), approvalId);
+      if (result.status() != ActionStatus.RECONCILIATION_REQUIRED) return finishAction(result);
+      reasonCode = result.reasonCode();
+    } catch (ActivityFailure failure) {
+      if (failure.getCause() instanceof CanceledFailure) throw failure;
+      reasonCode = "ACTIVITY_RESULT_UNCONFIRMED";
+    }
+    return awaitReconciliation();
+  }
+
+  private RunSnapshot awaitReconciliation() {
+    state = RunState.RECONCILIATION_REQUIRED;
+    while (true) {
+      reconciliationRequested = false;
+      try {
+        var result = activities.reconcileAction(operationId, request.service(), approvalId);
+        if (result.status() != ActionStatus.RECONCILIATION_REQUIRED) return finishAction(result);
+        reasonCode = result.reasonCode();
+      } catch (ActivityFailure failure) {
+        if (failure.getCause() instanceof CanceledFailure) throw failure;
+        reasonCode = "RECONCILIATION_UNAVAILABLE";
+      }
+      // A human may request another read or close the unknown task; neither action retries the tool.
+      Workflow.await(() -> reconciliationRequested);
+    }
+  }
+
   private RunSnapshot finishAction(ActionResult action) {
     reasonCode = action.reasonCode();
     output = action.output();
     state = switch (action.status()) {
       case EXECUTED -> RunState.SUCCEEDED;
       case DENIED -> RunState.DENIED;
+      case CLOSED_UNKNOWN -> RunState.CLOSED_UNKNOWN;
+      case RECONCILIATION_REQUIRED -> RunState.RECONCILIATION_REQUIRED;
       case FAILED, APPROVAL_REQUIRED -> RunState.FAILED;
     };
     return snapshot();
+  }
+
+  @Override
+  public void requestReconciliation() {
+    if (!state.terminal()) reconciliationRequested = true;
   }
 
   @Override

@@ -45,7 +45,7 @@ class SecurityConfiguration {
             .requestMatchers("/actuator/health").permitAll()
             .requestMatchers(HttpMethod.POST, "/api/runs/*/approval").hasRole("APPROVER")
             .requestMatchers(HttpMethod.GET, "/api/**").hasAnyRole("APPROVER", "OPERATOR")
-            .requestMatchers(HttpMethod.POST, "/api/runs", "/api/runs/*/cancel").hasRole("OPERATOR")
+            .requestMatchers(HttpMethod.POST, "/api/runs", "/api/runs/*/cancel", "/api/runs/*/reconciliation").hasRole("OPERATOR")
             .anyRequest().denyAll())
         .build();
   }

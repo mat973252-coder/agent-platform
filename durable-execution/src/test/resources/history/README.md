@@ -1,4 +1,4 @@
-# P0 / P1.1 历史兼容样本
+# P0 / P1.1 / P1.2 历史兼容样本
 
 样本由本项目提交 `2dc4cc3e5bbaf410c9e350518c883df2b6d9bdf1` 的
 `DiagnosticsWorkflowImpl` 与内存 `TestWorkflowEnvironment` 生成。
@@ -14,3 +14,8 @@
 `05327b51d373feafe4e7a932255467dc7e0f3a24` 的 P1.1 实现生成。
 Run ID 为 `run-p1-history-fixture`，输入同为 orders / 30 秒，Activity 使用合成 fixture；
 Worker identity 已脱敏。这些样本验证新增持久审批命令不破坏 P1.1 历史。
+
+`p12-waiting.json` 与 `p12-approved.json` 在 P1.3 Workflow 修改前，以提交
+`52362ae9bf76dab6df797ae7b3a0b8c19552d8bf` 的 P1.2 实现生成。
+Run ID 为 `run-p12-history-fixture`，输入为 orders / 30 秒，Activity 使用合成 fixture；
+Worker identity 已脱敏。这些样本验证持久执行结果和核验分支不改变 P1.2 历史。

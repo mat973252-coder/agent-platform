@@ -43,10 +43,11 @@ def await_state(base, run_id, state):
     raise AssertionError(f"Expected {state}, got {latest}")
 
 
-def start(jar, port, output, delivery=True):
+def start(jar, port, output, delivery=True, failure_mode="NONE"):
     process = subprocess.Popen(
         ["java", "-jar", str(jar), f"--server.port={port}",
-         f"--platform.approval-delivery.enabled={str(delivery).lower()}"],
+         f"--platform.approval-delivery.enabled={str(delivery).lower()}",
+         f"--platform.demo.failure-mode={failure_mode}"],
         stdout=output, stderr=subprocess.STDOUT,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
@@ -88,8 +89,9 @@ def main():
     jar = (root / args.jar).resolve()
     if not jar.is_file():
         raise FileNotFoundError("Build the application with Maven verify first")
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", args.port))
+    for port in (args.port, args.port + 1):
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", port))
     base = f"http://127.0.0.1:{args.port}"
     if not os.environ.get("PLATFORM_DATABASE_PASSWORD"):
         raise RuntimeError("Set PLATFORM_DATABASE_PASSWORD to match the approval-db container")
@@ -129,7 +131,7 @@ def main():
                 subprocess.run(["docker", "compose", "up", "-d", "--wait", "approval-db"], cwd=root, check=True)
             process = start(jar, args.port, output)
             complete = await_state(base, run_id, "SUCCEEDED")
-            assert complete["output"].startswith("SIMULATED_RESTART:orders")
+            assert complete["output"].startswith("TEST_LEDGER_RESTART:orders")
             assert complete["reasonCode"] == "DEMO_RESTART_REQUIRES_APPROVAL"
             completed_record = request(base, "GET", approval_path)
             assert completed_record == dict(saved_decision, executionStarted=True)
@@ -151,6 +153,63 @@ def main():
             expired, _ = create(base, seconds=2)
             assert await_state(base, expired, "TIMED_OUT")["output"] is None
             print("PASS rejection, cancellation, approval timeout and duplicate Run protection", flush=True)
+
+            process.kill()
+            process.wait(timeout=15)
+            process = start(jar, args.port, output, failure_mode="PAUSE_AFTER_LEDGER_COMMIT")
+            interrupted, _ = create(base)
+            approval = await_state(base, interrupted, "WAITING_APPROVAL")
+            operation_path = f"/api/runs/{interrupted}/operation"
+            generation = request(base, "GET", operation_path)["serviceGeneration"]
+            decision = {"approvalId": approval["approvalId"], "decision": "APPROVE"}
+            request(base, "POST", f"/api/runs/{interrupted}/approval", decision, 202)
+            deadline = time.monotonic() + 8
+            while True:
+                operation = request(base, "GET", operation_path)
+                if operation["receipt"] is not None:
+                    assert operation["execution"]["status"] == "IN_PROGRESS"
+                    assert operation["serviceGeneration"] == generation + 1
+                    break
+                if time.monotonic() >= deadline:
+                    raise AssertionError("Ledger commit was not observed before Activity timeout")
+                time.sleep(0.05)
+            first_pid = process.pid
+            process.kill()
+            process.wait(timeout=15)
+            process = start(jar, args.port + 1, output)
+            base = f"http://127.0.0.1:{args.port + 1}"
+            complete = await_state(base, interrupted, "SUCCEEDED")
+            recovered = request(base, "GET", operation_path)
+            assert recovered["receipt"] == operation["receipt"]
+            assert recovered["execution"]["output"] == complete["output"]
+            assert recovered["serviceGeneration"] == generation + 1
+            request(base, "POST", f"/api/runs/{interrupted}/approval", decision, 202)
+            assert request(base, "GET", operation_path)["serviceGeneration"] == generation + 1
+            print(f"PASS committed ledger crash recovery: {interrupted}; Worker {first_pid} -> "
+                  f"{process.pid}; ports {args.port} -> {args.port + 1}; one ledger write", flush=True)
+
+            process.kill()
+            process.wait(timeout=15)
+            process = start(jar, args.port + 1, output, failure_mode="FAIL_BEFORE_LEDGER_WRITE")
+            unknown, _ = create(base)
+            approval = await_state(base, unknown, "WAITING_APPROVAL")
+            operation_path = f"/api/runs/{unknown}/operation"
+            generation = request(base, "GET", operation_path)["serviceGeneration"]
+            request(base, "POST", f"/api/runs/{unknown}/approval",
+                    {"approvalId": approval["approvalId"], "decision": "APPROVE"}, 202)
+            await_state(base, unknown, "RECONCILIATION_REQUIRED")
+            request(base, "POST", f"/api/runs/{unknown}/reconciliation", {"action": "CHECK"}, 202)
+            process.kill()
+            process.wait(timeout=15)
+            process = start(jar, args.port + 1, output)
+            await_state(base, unknown, "RECONCILIATION_REQUIRED")
+            request(base, "POST", f"/api/runs/{unknown}/reconciliation",
+                    {"action": "CLOSE", "reason": "Smoke test: unresolved outcome manually closed"}, 202)
+            assert await_state(base, unknown, "CLOSED_UNKNOWN")["output"] is None
+            closed = request(base, "GET", operation_path)
+            assert closed["receipt"] is None and closed["serviceGeneration"] == generation
+            assert closed["execution"]["closedBy"] == "operator"
+            print("PASS unknown outcome survives restart; manual audited closure without re-execution", flush=True)
         finally:
             if process is not None and process.poll() is None:
                 process.terminate()
