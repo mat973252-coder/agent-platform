@@ -1,6 +1,6 @@
 # Agent Platform 实施清单
 
-> 状态日期：2026-09-08。P0、P1.1、P1.2 已交付；P1.3 持久执行与未知结果处理已实现、本地 72 项测试通过，真实 PostgreSQL 进程中断联调待 CI 验收。
+> 状态日期：2026-09-08。P0、P1.1、P1.2、P1.3 已交付；本地 72 项测试和真实 PostgreSQL 进程中断联调 CI 通过。下一阶段为 P2 真实 Agent 执行循环。
 > 技术栈：Java 21、Spring Boot 4、Temporal Java SDK、PostgreSQL。
 > 原始完整平台规划保留在 `production-agent-platform-tech-stack-and-core-features.md`；本清单决定实际执行顺序。
 
@@ -89,18 +89,20 @@ P1.2 历史边界：审批 PostgreSQL 独立于 Temporal 内部库，Flyway 管�
 
 ### P1.3 幂等与未知结果
 
-- [ ] 定义逻辑 operation ID；同一操作所有 Activity Attempt 使用相同 ID。
-- [ ] 验证跨 Worker 的结果复用与审批消费，不只检查单进程计数器。
-- [ ] 使用真实测试账本或支持幂等的可控下游，记录可核对的业务结果。
-- [ ] 注入“副作用已完成但结果未上报”的故障，验证不会换 ID 盲目重做。
-- [ ] 未知结果进入待核验状态，并支持查询下游、确认结果或人工结束任务。
-- [ ] 给补偿操作定义独立 ID、前置条件和失败状态，不把不可逆动作标为可回滚。
+- [x] 定义逻辑 operation ID；同一操作所有 Activity Attempt 使用相同 ID。
+- [x] 验证跨 Worker 的结果复用与审批消费，不只检查单进程计数器。
+- [x] 使用真实测试账本或支持幂等的可控下游，记录可核对的业务结果。
+- [x] 注入“副作用已完成但结果未上报”的故障，验证不会换 ID 盲目重做。
+- [x] 未知结果进入待核验状态，并支持查询下游、确认结果或人工结束任务。
+- [x] 定义未来补偿的独立 ID、前置条件和失败/未知状态契约；当前 restart 不可逆，不实现或宣称回滚。
 
 验收：并发重试、Worker 丢失及响应丢失都能说明副作用次数与最终状态；公开说明保证依赖和失效条件。
 
 范围：受控 PostgreSQL 测试账本具有真实写入及唯一回执，但不重启真实服务。未知执行不接管、不盲目重试；人工关闭不证明无副作用。当前 restart 为 IRREVERSIBLE，无补偿执行器；独立补偿 ID、前置条件及失败/未知状态契约见架构文档，不能计为已实现可回滚工具。
 
-P1.3 本地验证（2026-09-08）：Maven `verify` 72 项通过（core 8、adapter 28、Workflow 18、旧历史 6、HTTP/投递 12）。新增测试覆盖独立连接执行权争抢与下游去重、响应丢失、未知结果禁止重做、过期后读取确认结果、人工关闭保留审计、迟到结果和旧投递确认。Temporal 为内存服务、业务库为 H2；Python smoke 语法检查通过。真实 PostgreSQL + Temporal 的账本提交后 kill/新 Worker 恢复验收待 CI 结果。
+P1.3 本地验证（2026-09-08）：Maven `verify` 72 项通过（core 8、adapter 28、Workflow 18、旧历史 6、HTTP/投递 12）。新增测试覆盖独立连接执行权争抢与下游去重、响应丢失、未知结果禁止重做、过期后读取确认结果、人工关闭保留审计、迟到结果和旧投递确认。Temporal 为内存服务、业务库为 H2；Python smoke 语法、Compose 配置和 `git diff --check` 通过。本机 Docker 引擎管道仍不可用，真实容器证据来自 CI。
+
+P1.3 真实联调（2026-09-08）：[GitHub CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34238414365) 对功能提交 `8f02c442e02598b50ae20e08ecfafdc86b3d9e6d` 的上游 113 项、项目 72 项测试及全部 smoke 验收通过。账本操作 `run-2addec7b-1358-4b6b-aec6-96181ae0794c` 提交后强制终止 Worker，PID `6065 → 6309`、端口 `9091 → 9092` 恢复同一 Run；回执不变，generation 只增加一次。无回执的未知任务在再次重启后保持待核验，operator 留痕关闭且无新增账本写入。原有审批保存、PostgreSQL 重启、outbox 自动补投及拒绝/取消/超时检查也全部通过。
 
 ## P2：真实 Agent 执行循环
 

@@ -113,6 +113,8 @@ python scripts/smoke.py --restart-approval-db
 
 2026-09-08 的 [P1.2 CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34192140667) 已通过 55 项项目测试，并实际验证审批决定保存后中断投递、重启 Worker 与审批 PostgreSQL、自动补投后继续同一 Run。上游 113 项测试也通过。
 
+同日的 [P1.3 CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34238414365) 已通过 72 项项目测试及上游 113 项测试，并实际验证账本提交后终止 Worker、新进程在另一端口恢复同一结果且仅一次写入，以及未知任务跨重启后的人工留痕关闭。当前 P1.3 验收范围为受控数据库账本。
+
 ## 当前保证与限制
 
 - Temporal 恢复已记录的执行结果；Activity 在完成结果尚未上报时仍可能重试。
