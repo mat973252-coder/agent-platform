@@ -109,6 +109,8 @@ python scripts/smoke.py --restart-approval-db
 
 2026-09-07 的 [P1.1 CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34049953194) 已验证全新环境构建固定 AgentPermit 源码，并再次通过治理接入后的相同恢复验收。
 
+2026-09-08 的 [P1.2 CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34192140667) 已通过 55 项项目测试，并实际验证审批决定保存后中断投递、重启 Worker 与审批 PostgreSQL、自动补投后继续同一 Run。上游 113 项测试也通过。
+
 ## 当前保证与限制
 
 - Temporal 恢复已记录的执行结果；Activity 在完成结果尚未上报时仍可能重试。

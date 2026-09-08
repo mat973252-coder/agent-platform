@@ -1,6 +1,6 @@
 # Agent Platform 实施清单
 
-> 状态日期：2026-09-08。P0/P1.1 已交付；P1.2 已实现并通过本地测试，等待本轮真实数据库恢复 CI 验收；P1.3 尚未开始。
+> 状态日期：2026-09-08。P0、P1.1、P1.2 已交付，项目测试及真实数据库恢复 CI 均通过；下一阶段为 P1.3 跨 Worker 副作用幂等与未知结果处理。
 > 技术栈：Java 21、Spring Boot 4、Temporal Java SDK、PostgreSQL。
 > 原始完整平台规划保留在 `production-agent-platform-tech-stack-and-core-features.md`；本清单决定实际执行顺序。
 
@@ -166,4 +166,15 @@ P1.1 历史边界：接入真实 AgentPermit 管线和指纹校验，使用内�
 - `mvnw.cmd -B -ntp verify`：37 项项目测试通过（core 8、adapter 8、workflow 14、旧历史回放 2、HTTP API 5）。
 - 旧历史样本取自 P0 提交 `2dc4cc3`，分别覆盖等待审批和已批准完成；保留原 Workflow ID 验证回放，Activity 不被重新执行。
 - [P1.1 GitHub CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34049953194) 全部通过，验收提交为 `f71b603e4969a752a2d3fac8f404fff7b2c775e9`。全新 Linux 环境从锁定源码构建依赖，完成上游测试、项目 37 项测试、Compose、PostgreSQL + Temporal 启动，以及带治理原因码的 Worker 强制退出/恢复 smoke；拒绝、取消、超时与重复请求检查通过。
-- 本机 Docker 引擎仍不可用，未宣称已完成本地容器联调。P1.2 可信持久审批、P1.3 跨进程副作用幂等与未知结果处理仍未完成。
+- 本机 Docker 引擎仍不可用，未宣称已完成本地容器联调。该次验收时 P1.2/P1.3 尚未完成；P1.2 后续交付见下。
+
+## P1.2 验证记录（2026-09-08）
+
+- 先验证未认证请求错误地返回 404 而非 401、单独发送 APPROVE Signal 错误地执行工具，以及缺失持久审批类的预期失败，再实现身份校验、数据库记录和新工作流路径。
+- 本地 `mvnw.cmd -B -ntp verify`：55 项测试通过（core 8、adapter 18、workflow 15、旧历史回放 4、HTTP API/消息投递 10）。审批存储测试使用 H2，工作流测试使用内存 Temporal，不计为真实 PostgreSQL 恢复。
+- 存储测试覆盖原始绑定/截止时间不可变、重复决定、拒绝、过期、审批人权限变化、策略关闭、取消/claim 并发竞争、原审批审计身份保留，以及过期边界上的决定返回语义。HTTP 测试覆盖未认证、operator 越权、写请求头、审批身份记录、重复与相反决定。
+- `git diff --check`、Compose 配置校验与 Python smoke 语法检查通过。H2 2.4.240 的 CHECK 跨连接问题通过测试保留 DDL 连接处理；真实 PostgreSQL 使用相同迁移脚本。
+- [P1.2 GitHub CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34192140667) 全部通过，验收提交 `3d2c7c6895d8fe5445947503bdd5f2501ddcf65c`。全新 Linux 环境构建锁定依赖，上游 113 项与项目 55 项测试均通过。
+- CI 恢复证据：`run-da6d0a32-7700-4e00-8f29-6eb1d8d181a1`，Worker PID `4557 → 5321`；等待中的 Run 和审批记录跨 Worker 重启一致。关闭投递后保存批准，再强制终止应用、重启审批 PostgreSQL，随后应用重启自动补投，保持原审批绑定及审批人并完成模拟执行。
+- CI 同时验证 operator 不能批准、同一决定重复提交、拒绝、取消、审批超时和重复 Run 保护。本机 Windows Docker 引擎仍不可用，实际容器联调证据来自 CI。
+- P1.2 完成范围为固定演示资源、本机认证账户和独立持久审批；真实模型/工具、生产身份源、跨 Worker 副作用幂等及未知结果核验均未计为完成。
