@@ -4,16 +4,16 @@
 
 Java + Temporal 的持久化 Agent 执行基础项目。
 
-**当前阶段：P2 离线 Agent 循环与持久预算，验收记录见 TODO。** 新 Run 使用固定 runbook 和模型 fixture，执行受步骤、总时间及 token/cost 限额约束的“规划 → 工具 → 核验 → 结论”循环。重启仍通过真实 AgentPermit4j 管线、持久审批和数据库测试账本；它不重启真实服务。预算计量是合成单位，尚未接入真实模型、供应商账单、生产业务工具或生产身份系统。
+**当前阶段：P2 Agent 循环、持久预算与 Spring AI 接入，验收记录见 TODO。** 新 Run 执行受步骤、总时间及 token/cost 限额约束的“规划 → 工具 → 核验 → 结论”循环。默认使用离线 fixture，也可显式配置 OpenAI-compatible Chat Completions 服务。重启仍通过真实 AgentPermit4j 管线、持久审批和数据库测试账本；它不重启真实服务。远端 token 来自服务报告，费用按配置单价估算，未接供应商账单、生产业务工具或生产身份系统。
 
 ## 技术与结构
 
-- Java 21、Spring Boot 4.0.8、Temporal Java SDK 1.38.0。
+- Java 21、Spring Boot 4.0.8、Spring AI 2.0.1、Temporal Java SDK 1.38.0。
 - 本地 Temporal Server 1.31.0 使用 PostgreSQL 16 持久存储，Temporal UI 2.49.1。
 - `agent-runtime-core`：纯 Java 领域数据。
 - `durable-execution`：确定性 Agent 循环、Workflow 与独立规划/工具 Activity 契约。
 - `agentpermit-adapter`：可信调用构造、AgentPermit 决策映射及 JDBC 审批存储。
-- `platform-api`：Spring Boot API、Worker、严格模型输出解析、离线 fixture 与受控账本工具。
+- `platform-api`：Spring Boot API、Worker、Spring AI 模型适配、严格输出解析、离线 fixture 与受控账本工具。
 - [详细 TODO](TODO.md)、[架构边界](docs/architecture.md)、[完整平台规划](production-agent-platform-tech-stack-and-core-features.md)。
 
 ## 构建与测试
@@ -32,6 +32,7 @@ Linux/macOS：先运行 `python3 scripts/bootstrap-agentpermit.py`，再运行 `
 项目测试覆盖领域校验、真实 AgentPermit 决策、审批绑定/过期/取消竞态、独立数据库连接抢占执行权、下游去重、未知结果及人工关闭、工作流分支、Activity 重试、消息重投、旧历史回放和 HTTP 身份权限。测试中的 Temporal 使用内存服务，业务库使用 H2；真实 PostgreSQL 联调独立验收。依赖自身的 113 项测试单独记录。
 
 P2 新增严格 JSON/工具参数校验、模型重试、步数上限、读失败后重新规划、完成前核验，以及回放不再次调用模型的测试。默认模型是打包 JSON fixture，不发出模型 API 请求。
+Spring AI 测试使用本地 HTTP 服务模拟响应，验证真实 SDK 请求、用量结算、500/断连接时无隐藏重试，以及完整 API/审批/账本核验流程。CI 不调用付费模型；显式真实服务验收见下。
 
 ## 本地启动
 
@@ -112,6 +113,34 @@ Invoke-RestMethod -Uri "http://127.0.0.1:9090$($run.statusUrl)" -Headers $operat
 
 写入后必须先通过 `ops.verify` 才允许 `FINISH`。核验只确认绑定的账本回执，不证明真实服务健康；模型宣称成功不能替代核验。任务在后续规划或核验失败时可能为 FAILED，但先前写入仍已完成，可用 `/operation` 查看；失败不等于回滚。
 
+## 启用 Spring AI 模型
+
+默认 `PLATFORM_MODEL_PROVIDER=OFFLINE`。启用远端时需显式配置以下环境变量，再按前面的本地启动步骤运行应用：
+
+| 环境变量 | 含义 |
+|---|---|
+| `PLATFORM_MODEL_PROVIDER` | `OPENAI_COMPATIBLE` |
+| `PLATFORM_MODEL_BASE_URL` | 完整 HTTPS API 根地址，通常以 `/v1` 结尾；不能含凭据或 query |
+| `PLATFORM_MODEL_NAME` | 服务支持的模型标识 |
+| `PLATFORM_MODEL_API_KEY` | 本机注入的密钥，不写入 Run 或数据库 |
+| `PLATFORM_MODEL_PRICING_VERSION` | 本次参考价格的版本标识 |
+| `PLATFORM_MODEL_INPUT_MICROUSD_PER_MILLION` | 每百万输入 token 的 microUSD 估算单价，如 3000000 表示 USD 3 |
+| `PLATFORM_MODEL_OUTPUT_MICROUSD_PER_MILLION` | 每百万输出 token 的 microUSD 估算单价，如 15000000 表示 USD 15 |
+
+密钥可使用前文同样的 PowerShell `Read-Host -AsSecureString` 方式设置；不得放进命令行参数或提交配置。输入/输出额度通过 `platform.model.max-input-tokens` / `max-output-tokens` 配置，默认 8192 / 512。模型、端点、prompt 与价格随 Run 固定，旧离线 Run 恢复时仍保持离线。更换凭据端点后不能用新端点偷偷接管旧 Run；需保留匹配配置才能继续未完成请求。
+
+`/budget` 会返回 `PROVIDER_USAGE_CONFIGURED_ESTIMATE` 和冻结的模型 profile。usage 缺失、无效输出、模型请求被拒绝均有明确原因；没有实际响应用量时保留预留，不按零成本结算或回退 fixture。费用是配置估算，代理自身收费、缓存折扣和实际账单未接入；输出上限依赖兼容服务遵守 `max_tokens`。
+
+显式真实服务验收可复用已有本地 dotenv 中的 `LLM_BASE_URL`、`LLM_MODEL`、`LLM_API_KEY`，或直接从同名环境变量读取：
+
+```powershell
+python scripts/smoke-model.py --pricing-version reference-v1 --input-microusd-per-million 3000000 --output-microusd-per-million 15000000
+```
+
+可追加 `--env-file` 指向自己的本机凭据文件，文件不会复制进项目。必须按实际使用的参考价填写参数。该脚本显式发起真实模型请求，最多 4 个规划步骤、每步最多 3 次尝试、总时限 120 秒、估算费用上限 500000 microUSD；日志在忽略的 `var/model-live.log`。只使用合成诊断数据和测试账本，Temporal 为内存服务、业务库为 H2，不能计为 PostgreSQL 跨进程验收。
+
+2026-09-09 已通过自建兼容服务的 `claude-sonnet-4-6` 实际调用验收：3 次模型请求，服务报告 2227 token，按输入 USD 3 / 输出 USD 15 每百万 token 的参考价估算为 9489 microUSD。该参考价来自 [上游模型公开价格](https://platform.claude.com/docs/en/models/sonnet-4-6/overview)，不是自建网关账单，也未独立验证其背后的模型路由。
+
 ## 跨进程恢复验收
 
 需要运行中的 Compose、匹配的 `PLATFORM_DATABASE_PASSWORD` 和 Python 3 标准库。脚本使用临时账户口令启动 API（默认需要空闲端口 9091 和 9092），验证等待审批、审批 outbox 与数据库重启恢复，以及拒绝、取消、超时和重复请求。随后在测试账本已提交、Activity 尚未返回时强制结束 Worker，由另一个端口上的新 Worker 恢复，核对回执相同且 generation 只增加一次；最后验证无回执的未知任务跨重启保留，并由 operator 留痕关闭。结束时只停止脚本创建的应用进程。
@@ -149,7 +178,7 @@ python scripts/smoke.py --restart-approval-db
 - `Workflow.getVersion` 保留升级前命令序列，12 份固定旧历史参与回放。未带预算的旧 Run 不插入预算步骤，P1.3 旧 Run 不插入模型步骤，P1.2 旧 Run 不自动获得新的持久副作用保证。P0/P1.1 尚未决定的 Run 没有可信审批记录，应取消并用新 requestId 重建。
 - API、Temporal gRPC 与 UI 仅绑定 loopback；当前 Compose 是开发演示配置。
 - 取消不会回滚已经完成的外部操作。
-- 当前业务库保存审批、执行结果与测试账本，不是完整 Run/Step 查询视图；LLM/RAG、管理前端、SSE、Sandbox 和多 Runtime 在 TODO 分阶段列明。
+- 当前业务库保存审批、执行结果、预算与模型 profile，不是完整 Run/Step 查询视图；RAG、管理前端、SSE、Sandbox 和多 Runtime 在 TODO 分阶段列明。
 - 原始平台规划描述最终愿景，不是当前能力清单。
 
 ## License

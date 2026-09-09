@@ -3,6 +3,7 @@ package io.github.mat973252.agentplatform.api;
 import io.github.mat973252.agentplatform.core.ApprovalCommand;
 import io.github.mat973252.agentplatform.core.RunRequest;
 import io.github.mat973252.agentplatform.core.RunBudget;
+import io.github.mat973252.agentplatform.core.ModelProfile;
 import io.github.mat973252.agentplatform.core.RunSnapshot;
 import io.github.mat973252.agentplatform.core.RunState;
 import io.github.mat973252.agentplatform.durable.DiagnosticsWorkflow;
@@ -23,14 +24,16 @@ class RunService {
   private final JdbcApprovalStore approvals;
   private final PersistentGovernance governance;
   private final RunBudget budget;
+  private final ModelProfile model;
 
   RunService(WorkflowClient client, @Value("${platform.temporal.task-queue}") String taskQueue,
-      JdbcApprovalStore approvals, PersistentGovernance governance, RunBudget budget) {
+      JdbcApprovalStore approvals, PersistentGovernance governance, RunBudget budget, ModelProfile model) {
     this.client = client;
     this.taskQueue = taskQueue;
     this.approvals = approvals;
     this.governance = governance;
     this.budget = budget;
+    this.model = model;
   }
 
   String create(String requestId, RunRequest request) {
@@ -41,7 +44,7 @@ class RunService {
             .setTaskQueue(taskQueue)
             .setWorkflowIdReusePolicy(WorkflowIdReusePolicy.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE)
             .build());
-    WorkflowClient.start(workflow::execute, new RunRequest(request.service(), request.approvalTimeoutSeconds(), budget));
+    WorkflowClient.start(workflow::execute, new RunRequest(request.service(), request.approvalTimeoutSeconds(), budget, model));
     return runId;
   }
 

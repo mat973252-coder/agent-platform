@@ -10,6 +10,8 @@ import io.temporal.failure.ApplicationFailure;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.time.Duration;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -18,19 +20,25 @@ import tools.jackson.databind.json.JsonMapper;
 @Component
 class BudgetedPlanningActivities implements BudgetActivities {
   // These are synthetic fixture units, not a provider's token count or bill.
-  private static final ModelUsage ALLOWANCE = new ModelUsage(2048, 512, 5000);
   private static final ModelUsage USAGE = new ModelUsage(800, 128, 1000);
   private final DemoAgentActivities planner;
   private final JdbcModelBudgetStore budgets;
   private final ModelFailureMode failure;
+  private final SpringAiPlanner remote;
   private final ModelDecisionCodec codec = new ModelDecisionCodec();
   private final JsonMapper mapper = JsonMapper.builder().build();
 
+  @Autowired
   BudgetedPlanningActivities(DemoAgentActivities planner, JdbcModelBudgetStore budgets,
-      @Value("${platform.demo.model-failure-mode:NONE}") ModelFailureMode failure) {
+      @Value("${platform.demo.model-failure-mode:NONE}") ModelFailureMode failure, SpringAiPlanner remote) {
     this.planner = planner;
     this.budgets = budgets;
     this.failure = failure;
+    this.remote = remote;
+  }
+
+  BudgetedPlanningActivities(DemoAgentActivities planner, JdbcModelBudgetStore budgets, ModelFailureMode failure) {
+    this(planner, budgets, failure, new SpringAiPlanner("", ""));
   }
 
   @Override
@@ -45,7 +53,7 @@ class BudgetedPlanningActivities implements BudgetActivities {
     requireRun(budget);
     int attempt = Activity.getExecutionContext().getInfo().getAttempt();
     try {
-      var permit = budgets.reserve(budget, context.decisionId(), attempt, fingerprint(context), ALLOWANCE);
+      var permit = budgets.reserve(budget, context.decisionId(), attempt, fingerprint(context), budget.model().allowance());
       if (!permit.acquired()) return codec.decode(permit.output(), context.service());
       return executeReserved(context, budget, attempt);
     } catch (BudgetViolation violation) { throw rejected(violation); }
@@ -53,14 +61,17 @@ class BudgetedPlanningActivities implements BudgetActivities {
 
   private AgentDecision executeReserved(AgentContext context, BudgetContext budget, int attempt) {
     try {
-      String response = planner.response(context);
+      var reply = budget.model().remote()
+          ? remote.call(budget.model(), context, Duration.ofMillis(Math.min(40000, budget.deadlineEpochMillis() - System.currentTimeMillis() - 250)))
+          : new SpringAiPlanner.Reply(planner.response(context), USAGE);
+      String response = reply.text();
       afterResponse(context.decisionId());
       try { codec.decode(response, context.service()); }
       catch (IllegalArgumentException invalid) {
-        budgets.complete(budget, context.decisionId(), attempt, USAGE, null);
+        budgets.complete(budget, context.decisionId(), attempt, reply.usage(), null);
         throw ApplicationFailure.newNonRetryableFailure("Model decision rejected", "MODEL_OUTPUT_INVALID");
       }
-      String saved = budgets.complete(budget, context.decisionId(), attempt, USAGE, response);
+      String saved = budgets.complete(budget, context.decisionId(), attempt, reply.usage(), response);
       if (failure == ModelFailureMode.FAIL_AFTER_BUDGET_COMMIT) throw new IllegalStateException("Synthetic response loss after settlement");
       return codec.decode(saved, context.service());
     } catch (RuntimeException uncertain) {

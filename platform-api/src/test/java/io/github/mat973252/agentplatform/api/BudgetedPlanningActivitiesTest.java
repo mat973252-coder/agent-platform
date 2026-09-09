@@ -30,6 +30,7 @@ import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 class BudgetedPlanningActivitiesTest {
   private final Instant now = Instant.parse("2026-09-08T00:00:00Z");
   private final DemoAgentActivities planner = mock(DemoAgentActivities.class);
+  private final SpringAiPlanner remote = mock(SpringAiPlanner.class);
   private SingleConnectionDataSource source;
   private JdbcModelBudgetStore store;
   private TestWorkflowEnvironment environment;
@@ -41,7 +42,8 @@ class BudgetedPlanningActivitiesTest {
   @BeforeEach
   void setUp() {
     source = new SingleConnectionDataSource("jdbc:h2:mem:" + UUID.randomUUID(), "sa", "", true);
-    new ResourceDatabasePopulator(new ClassPathResource("db/migration/V3__model_budgets.sql")).execute(source);
+    new ResourceDatabasePopulator(new ClassPathResource("db/migration/V3__model_budgets.sql"),
+        new ClassPathResource("db/migration/V4__model_profiles.sql")).execute(source);
     store = new JdbcModelBudgetStore(source, Clock.fixed(now, ZoneOffset.UTC));
     when(planner.response(any())).thenReturn(response);
   }
@@ -50,6 +52,35 @@ class BudgetedPlanningActivitiesTest {
   void close() {
     if (environment != null) environment.close();
     source.destroy();
+  }
+
+  @Test
+  void realUsageIsSettledAndCachedRetryDoesNotCallTheProviderAgain() {
+    when(remote.call(any(), any(), any())).thenReturn(new SpringAiPlanner.Reply(response, new ModelUsage(1000, 100, 4500)));
+    var workflow = start(ModelFailureMode.FAIL_AFTER_BUDGET_COMMIT);
+    assertEquals("FINISH", workflow.run(remoteBudget(), input).action());
+    assertEquals(1100, store.get("run-probe").usedTokens());
+    assertEquals(4500, store.get("run-probe").usedCostMicrousd());
+    assertEquals(0, store.get("run-probe").reservedTokens());
+    verify(remote, times(1)).call(any(), any(), any());
+    verifyNoInteractions(planner);
+  }
+
+  @Test
+  void missingProviderUsageKeepsTheFullReservationWithoutOfflineFallback() {
+    when(remote.call(any(), any(), any())).thenThrow(ApplicationFailure.newNonRetryableFailure("Missing usage", "MODEL_USAGE_UNKNOWN"));
+    var failure = assertThrows(WorkflowFailedException.class, () -> start(ModelFailureMode.NONE).run(remoteBudget(), input));
+    assertEquals("MODEL_USAGE_UNKNOWN", ((ApplicationFailure) failure.getCause().getCause()).getType());
+    assertEquals(8704, store.get("run-probe").reservedTokens());
+    assertEquals(0, store.get("run-probe").usedTokens());
+    verify(remote, times(1)).call(any(), any(), any());
+    verifyNoInteractions(planner);
+  }
+
+  private BudgetContext remoteBudget() {
+    var model = new ModelProfile("OPENAI_COMPATIBLE", "https://example.com/v1", "test-model",
+        "diagnostics-prompt-v2", "price-v1", 8192, 512, 3000000, 15000000);
+    return new BudgetContext("run-probe", RunBudget.defaults(), now.plusSeconds(60).toEpochMilli(), model);
   }
 
   @Test
@@ -96,7 +127,7 @@ class BudgetedPlanningActivitiesTest {
     environment = TestWorkflowEnvironment.newInstance();
     var worker = environment.newWorker("budget-probe");
     worker.registerWorkflowImplementationTypes(Probe.class);
-    worker.registerActivitiesImplementations(new BudgetedPlanningActivities(planner, store, failure));
+    worker.registerActivitiesImplementations(new BudgetedPlanningActivities(planner, store, failure, remote));
     environment.start();
     return environment.getWorkflowClient().newWorkflowStub(ProbeWorkflow.class,
         WorkflowOptions.newBuilder().setWorkflowId("run-probe").setTaskQueue("budget-probe").build());

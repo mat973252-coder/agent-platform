@@ -46,6 +46,19 @@ class DiagnosticsWorkflowTest {
   }
 
   @Test
+  void modelProfileIsFrozenInActivitiesAndProgress() {
+    var model = new ModelProfile("OPENAI_COMPATIBLE", "https://example.com/v1",
+        "test-model", "diagnostics-prompt-v2", "test-price-v1", 8192, 512, 3000000, 15000000);
+    decideAfter(Duration.ofSeconds(1), ApprovalDecision.APPROVE);
+    var result = workflow.execute(new RunRequest("orders", 30, RunBudget.defaults(), model));
+    assertEquals(RunState.SUCCEEDED, result.state());
+    assertEquals(model, operations.budgetContext.model());
+    assertEquals("test-model", operations.contexts.getFirst().modelVersion());
+    assertEquals("diagnostics-prompt-v2", result.agent().promptVersion());
+    assertEquals("test-model", result.agent().modelVersion());
+  }
+
+  @Test
   void approvalExecutesThePreparedOperationAndHistoryReplays() throws Exception {
     decideAfter(Duration.ofSeconds(1), ApprovalDecision.APPROVE);
     var result = workflow.execute(new RunRequest("orders", 30));

@@ -28,7 +28,8 @@ class JdbcModelBudgetStoreTest {
   @BeforeEach
   void setUp() {
     source = new SingleConnectionDataSource("jdbc:h2:mem:" + UUID.randomUUID(), "sa", "", true);
-    new ResourceDatabasePopulator(new ClassPathResource("db/migration/V3__model_budgets.sql")).execute(source);
+    new ResourceDatabasePopulator(new ClassPathResource("db/migration/V3__model_budgets.sql"),
+        new ClassPathResource("db/migration/V4__model_profiles.sql")).execute(source);
     store = new JdbcModelBudgetStore(source, clock);
     context = new BudgetContext("run-budget", new RunBudget(6, 30, 30, 40), now.plusSeconds(30).toEpochMilli());
     store.open(context);
@@ -36,6 +37,22 @@ class JdbcModelBudgetStoreTest {
 
   @AfterEach
   void close() { source.destroy(); }
+
+  @Test
+  void modelAndPricesRemainBoundOnRecoveryAndLegacyRowsStayOffline() {
+    var legacyRequest = tools.jackson.databind.json.JsonMapper.builder().build()
+        .readValue("{\"service\":\"orders\",\"approvalTimeoutSeconds\":30}", RunRequest.class);
+    assertEquals(ModelProfile.offline(), legacyRequest.model());
+    var model = new ModelProfile("OPENAI_COMPATIBLE", "https://example.com/v1", "test-model",
+        "diagnostics-prompt-v2", "price-v1", 8192, 512, 3000000, 15000000);
+    var remote = new BudgetContext("run-remote", RunBudget.defaults(), context.deadlineEpochMillis(), model);
+    assertEquals(model, store.open(remote).model());
+    assertEquals("PROVIDER_USAGE_CONFIGURED_ESTIMATE", store.get("run-remote").meteringMode());
+    assertThrows(BudgetViolation.class, () -> store.open(new BudgetContext("run-remote", RunBudget.defaults(),
+        context.deadlineEpochMillis(), ModelProfile.offline())));
+    new org.springframework.jdbc.core.JdbcTemplate(source).update("UPDATE platform_run_budgets SET model_profile=NULL WHERE run_id='run-budget'");
+    assertEquals(ModelProfile.offline(), store.open(context).model());
+  }
 
   @Test
   void committedResultIsReusedAcrossWorkersWithoutChargingTwice() {

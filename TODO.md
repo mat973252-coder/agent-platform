@@ -1,6 +1,6 @@
 # Agent Platform 实施清单
 
-> 状态日期：2026-09-09。P0、P1.1、P1.2、P1.3 已交付。P2 离线 Agent 循环已交付，本轮增加持久步骤/总时间/token/cost 预算；真实模型与供应商计量留在下一阶段。预算验证进度见 P2 记录。
+> 状态日期：2026-09-09。P0、P1.1、P1.2、P1.3 已交付。P2 已实现 Agent 循环、持久预算与 Spring AI 模型接入；本轮真实调用通过，费用为配置估算，供应商账单未接入。完整验证进度见 P2 记录。
 > 技术栈：Java 21、Spring Boot 4、Temporal Java SDK、PostgreSQL。
 > 原始完整平台规划保留在 `production-agent-platform-tech-stack-and-core-features.md`；本清单决定实际执行顺序。
 
@@ -106,18 +106,24 @@ P1.3 真实联调（2026-09-08）：[GitHub CI](https://github.com/mat973252-cod
 
 ## P2：真实 Agent 执行循环
 
-- [ ] 用独立模型 Activity 调用 Spring AI，Workflow 内不直接执行模型或网络请求。
-- [x] 模型输出使用明确 schema，工具名与参数必须经过服务端校验；本轮输出来自离线 JSON fixture。
+- [x] 用独立模型 Activity 调用 Spring AI，Workflow 内不直接执行模型或网络请求；默认离线，显式启用 OpenAI-compatible 服务。
+- [x] 模型输出使用明确 schema，工具名与参数必须经过服务端校验；离线 fixture 和远端响应共用严格解析器。
 - [x] 区分模型错误、工具读取错误、策略拒绝、上下文不足、核验未确认和步数耗尽；写结果未知继续走 P1.3 核验。
-- [x] 实现有限步骤的 plan/execute/verify 循环，固定模型/提示词/工具/runbook 版本；当前为离线 fixture。
-- [x] 增加最大步骤数、总时间、token/cost 预算；重试计入预算。当前 token/cost 为显式离线模拟单位，真实供应商计量随模型接入另验。
+- [x] 实现有限步骤的 plan/execute/verify 循环，固定模型/提示词/工具/runbook 版本；支持默认离线与显式远端模式。
+- [x] 增加最大步骤数、总时间、token/cost 预算；重试计入预算。明确区分离线模拟与服务报告 usage / 配置费用估算。
 - [x] 已上报的模型 Activity 结果随 Temporal 历史保存，回放使用既有结果；未上报请求仍可能再次调用。
 - [x] 模型规划、证据读取、写工具和只读核验分属独立 Activity，不把循环整体重试。
 - [x] 检索/上下文先使用固定 runbook；向量库和 compaction 暂不接入。
 
 验收：离线模型 fixture 覆盖成功、非法工具、超预算和失败后重新规划；真实模型联调单独记录，CI 不依赖付费 API。
 
-P2 首批范围：模型可补查证据、申请一次受审批的 orders 重启、核验账本或结束诊断；未知写阻塞后续规划，不允许第二次写或跳过核验宣称成功。默认 fixture 不调用真实 LLM；Spring AI 接入留在后续。
+P2 范围：模型可补查证据、申请一次受审批的 orders 重启、核验账本或结束诊断；未知写阻塞后续规划，不允许第二次写或跳过核验宣称成功。默认 fixture 不调用真实 LLM；Spring AI 模型模式由服务端显式启用。
+
+Spring AI 实现（2026-09-09）：使用 2.0.1 与官方 SDK 4.49.0，关闭 SDK 和连接层隐藏重试，每个物理请求独立预留。冻结模型/端点/prompt/价格/额度到 Run 和预算业务表；旧输入、旧预算行保持 offline。严格校验 usage，缺失时保留预留并失败，不降级假数据；费用标记为 `PROVIDER_USAGE_CONFIGURED_ESTIMATE`，不等同供应商账单。API Key 只在本机环境中使用，不持久化。系统指令与上下文分离，模型不能绕过原工具审批和治理。
+
+真实模型验收（2026-09-09）：`scripts/smoke-model.py` 复用已有本机配置，对自建 OpenAI-compatible 服务的 `claude-sonnet-4-6` 完成一次完整规划/审批/测试账本写入/核验/结论流程；Run `run-ffeff979-0405-464b-aeb8-42336348955d`，3 次实际模型请求，服务报告 2227 token，参考费用 9489 microUSD，零剩余预留，并回放历史。参考单价为每百万输入 USD 3、输出 USD 15，版本 `sonnet-reference-2026-09-09`；这是估算，不是网关账单，也不独立证明上游模型路由。此项为真实网络请求 + 内存 Temporal/H2，生产服务工具和 PostgreSQL 跨进程真实模型恢复未计为验收。
+
+Spring AI 本地回归（2026-09-09）：Maven `verify` 128 项通过（core 14、adapter 28、Workflow 38、固定旧历史 12、API/模型/预算/投递 36）。新增测试覆盖旧输入与旧预算行保持离线、profile 恢复绑定、实际 HTTP 请求输出上限、500 和断连接无隐藏重试、缺失 usage 不当零、端点漂移不发送凭据、错误正文不进入异常、服务用量结算及缓存重试，以及 HTTP mock 下的完整审批/核验流程。Python 脚本语法与 `git diff --check` 通过。最终 CI 结果待补录；CI 保持只使用 fixture 和本地 HTTP mock。
 
 预算实现（2026-09-09）：服务端冻结 6 步/900 秒/100000 token/1000000 microUSD 的默认限额，审批等待、Activity 重试及退避包含在总时限内。每次模型请求事务预留，成功结算与决策缓存同事务；未知响应保留全额预留，重试必须另有额度。新增只读 `/budget` 查询，原 P2 历史通过版本分支兼容。超时后仅保留未知写的只读核验/人工关闭，不能回滚已开始操作。计量模式固定 `OFFLINE_SIMULATED`，不是供应商账单。
 

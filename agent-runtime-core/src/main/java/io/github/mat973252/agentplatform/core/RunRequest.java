@@ -1,12 +1,16 @@
 package io.github.mat973252.agentplatform.core;
 
-public record RunRequest(String service, int approvalTimeoutSeconds, RunBudget budget) {
+public record RunRequest(String service, int approvalTimeoutSeconds, RunBudget budget, ModelProfile model) {
+  public RunRequest(String service, int approvalTimeoutSeconds, RunBudget budget) {
+    this(service, approvalTimeoutSeconds, budget, ModelProfile.offline());
+  }
   public RunRequest(String service, int approvalTimeoutSeconds) {
     this(service, approvalTimeoutSeconds, RunBudget.defaults());
   }
 
   public RunRequest {
     if (budget == null) budget = RunBudget.defaults();
+    if (model == null) model = ModelProfile.offline();
     if (!"orders".equals(service)) {
       throw new IllegalArgumentException("Only the fixed orders demo is supported");
     }

@@ -21,6 +21,7 @@
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <temporal.version>1.38.0</temporal.version>
     <agentpermit.version>0.2.0</agentpermit.version>
+    <spring-ai.version>2.0.1</spring-ai.version>
   </properties>
   <modules>
     <module>agent-runtime-core</module>
@@ -30,6 +31,13 @@
   </modules>
   <dependencyManagement>
     <dependencies>
+      <dependency>
+        <groupId>org.springframework.ai</groupId>
+        <artifactId>spring-ai-bom</artifactId>
+        <version>${spring-ai.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
       <dependency>
         <groupId>io.temporal</groupId>
         <artifactId>temporal-bom</artifactId>

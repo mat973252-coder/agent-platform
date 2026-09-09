@@ -9,6 +9,16 @@ server:
   address: 127.0.0.1
   port: 9090
 platform:
+  model:
+    provider: ${PLATFORM_MODEL_PROVIDER:OFFLINE}
+    base-url: ${PLATFORM_MODEL_BASE_URL:}
+    name: ${PLATFORM_MODEL_NAME:}
+    api-key: ${PLATFORM_MODEL_API_KEY:}
+    pricing-version: ${PLATFORM_MODEL_PRICING_VERSION:}
+    input-microusd-per-million: ${PLATFORM_MODEL_INPUT_MICROUSD_PER_MILLION:0}
+    output-microusd-per-million: ${PLATFORM_MODEL_OUTPUT_MICROUSD_PER_MILLION:0}
+    max-input-tokens: 8192
+    max-output-tokens: 512
   budget:
     max-model-steps: 6
     max-duration-seconds: 900

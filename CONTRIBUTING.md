@@ -16,3 +16,5 @@ smoke 需要相邻两个空闲端口，验证账本提交后强制终止 Worker�
 PR 描述包含具体行为、验收结果与尚未覆盖的边界。不得提交凭据、真实业务数据或日志。
 
 离线 Agent 的 schema、严格解析器和 fixture 必须保持一致。修改模型、提示词、工具或 runbook 时显式升级版本；历史保留期内保留旧版本所需的 Activity/资源，不能在同一版本下静默换内容。CI 不调用付费模型 API。
+
+Spring AI 默认测试使用本地 HTTP mock。真实调用只能通过显式 `scripts/smoke-model.py` 和本机凭据启用；不得给 CI 注入模型密钥。端点、模型、prompt、价格必须随 Run 冻结，SDK/transport 升级须复核 500 与断连接测试，防止隐藏重试绕过预留。报告分开列出服务 usage、配置费用估算、真实网络请求和 PostgreSQL 进程恢复证据。

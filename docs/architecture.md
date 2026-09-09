@@ -3,8 +3,8 @@
 ## 范围
 
 当前实现单个诊断任务的可恢复执行流程，使用固定合成证据和数据库测试账本。
-P1.1 加入 AgentPermit4j 适配，P1.2 加入独立持久审批和本机账户身份验证，P1.3 加入持久执行权、结果复用和未知结果核验。测试账本具有真实数据库写入，但不重启真实服务；生产身份源、真实模型和生产业务工具仍在后续阶段，见根目录 TODO。
-P2 增加严格决策契约、离线 fixture 驱动的有限 Agent 循环与持久预算；模型、提示词、工具和 runbook 版本显式记录。Spring AI/真实模型尚未接入，token/cost 使用明确标记的合成计量。
+P1.1 加入 AgentPermit4j 适配，P1.2 加入独立持久审批和本机账户身份验证，P1.3 加入持久执行权、结果复用和未知结果核验。测试账本具有真实数据库写入，但不重启真实服务；生产身份源和生产业务工具仍在后续阶段，见根目录 TODO。
+P2 增加严格决策契约、有限 Agent 循环与持久预算，并通过 Spring AI 接入显式配置的 OpenAI-compatible Chat Completions 服务。默认保留离线 fixture；真实请求的 token 来自服务报告，cost 按冻结的参考价格估算。
 
 ## 模块
 
@@ -96,7 +96,19 @@ API 使用显式配置的本机 Basic 账户：operator 创建/查询/取消/核
 
 丢失响应、进程退出或无法确认结算时保留全部预留额度；同一 attempt 不重新获准，下一 attempt 必须另有足够预算。没有自动退还未知额度或按超时接管的入口。数据库落账但 Activity 结果未上报时重试复用缓存；模型响应尚未落账时可能再次请求，不能承诺供应商 exactly-once。
 
-当前 `meteringMode=OFFLINE_SIMULATED`：每次预留 2048 输入 + 512 输出 token、5000 microUSD，成功 fixture 使用 800 + 128 token、1000 microUSD。这些数值是故障验收单位，不是实际 token 统计或供应商账单。真实模型接入必须提供有界输入/输出额度、服务端输出上限、实际 usage 与版本化价格，另行验证。服务启动参数 `platform.demo.model-failure-mode` 支持 `FAIL_AFTER_MODEL_RESPONSE`、`PAUSE_AFTER_MODEL_RESPONSE`、`FAIL_AFTER_BUDGET_COMMIT`，默认 `NONE`，API 不能启用故障注入。
+离线 `meteringMode=OFFLINE_SIMULATED`：每次预留 2048 输入 + 512 输出 token、5000 microUSD，成功 fixture 使用 800 + 128 token、1000 microUSD。这些数值是故障验收单位，不是实际 token 统计或供应商账单。服务启动参数 `platform.demo.model-failure-mode` 支持 `FAIL_AFTER_MODEL_RESPONSE`、`PAUSE_AFTER_MODEL_RESPONSE`、`FAIL_AFTER_BUDGET_COMMIT`，默认 `NONE`，API 不能启用故障注入。
+
+## Spring AI 模型边界
+
+`ModelProfile` 在 Run 创建时冻结 provider、base URL、model、promptVersion、pricingVersion、输入/输出额度和每百万 token 的 microUSD 单价；不保存 API Key。V4 迁移将完整 profile 写入预算业务表，恢复校验全部绑定。旧 Workflow 输入缺少 model 或旧预算行没有 profile 时保持 offline，部署启用真实模型不会把旧任务改成联网请求。API 不接收调用方指定的模型或端点。凭据由 Worker 环境提供，旧 Run 的端点与当前凭据配置不一致时明确失败，不把凭据发送到变化后的端点；已缓存决策仍可只读复用。
+
+`SpringAiPlanner` 使用 Spring AI 2.0.1 `OpenAiChatModel` 非流式调用，不注册工具执行器，不使用自动 Agent/工具循环。系统指令固定为 `diagnostics-prompt-v2`，合成证据、runbook 和观察作为 JSON 用户数据提供，严格解析器和 Workflow 仍负责动作范围校验，所有写工具仍通过 AgentPermit。兼容服务须实现 Chat Completions、`max_tokens` 和完整 usage；未默认假设其支持供应商专用的 JSON schema、reasoning 或工具协议。
+
+每次远端模型 Activity 的 StartToClose 上限为 45 秒，ScheduleToClose 上限为 150 秒，均受剩余 Run 时间限制；HTTP 最多 40 秒且在总 deadline 前留出结算时间。显式注入官方 OpenAI SDK 4.49.0 的 OkHttp transport（关闭连接重试），同时设 SDK `maxRetries=0`，避免一次预留产生隐藏重试；Spring AI 自带 transport 的连接重试默认值不用于本项目。每次请求结束关闭 client。SDK 异常及上游错误正文不写入工作流历史，仅映射固定错误类型。
+
+远端计量模式为 `PROVIDER_USAGE_CONFIGURED_ESTIMATE`。发送前校验系统指令与上下文 UTF-8 字节数加 256 的保守本地输入额度，输出用 `max_tokens` 限制；预留 profile 的完整输入/输出额度及相应估算费用。响应必须提供有效 input/output/total usage，缺失或不一致不能按零用量结算，也不回退 fixture；非法 JSON 有有效 usage 时仍结算。服务报告用量超出 allowance 时保持预留并失败。字节估算不等于供应商 tokenizer，代理附加上下文、错误用量或不遵守输出上限的服务不能由客户端保证真实消费硬上限；这需要可信服务契约。单价包括其版本，缓存 token 按配置的普通输入价保守估算；不声称等于网关折扣、缓存价格或实际账单。
+
+CI 使用本机 HTTP mock 验证协议、500/断连接不隐藏重试、usage 缺失、端点绑定及完整审批/核验流程，不调用付费模型。`scripts/smoke-model.py` 是显式真实服务验收入口；它复用本机 dotenv 或环境，只发送合成诊断数据，以 H2 和内存 Temporal 承载流程。真实模型请求与 PostgreSQL 跨进程恢复是两套独立证据，不混称为同一次生产联调。
 
 模型/提示词/工具/runbook 版本随 Activity 输入持久记录，并在 `agent` 查询字段展示。版本升级必须保留旧内容和兼容分支，不能用同一版本覆盖 fixture。完整步骤查询视图和模型供应商适配后续实现。
 
@@ -125,7 +137,7 @@ Workflow 对未知结果立即执行只读 `reconcileAction`；有匹配回执�
 
 ## 技术版本与验证
 
-Java 21；Spring Boot 4.0.8；Temporal BOM/SDK/testing 1.38.0。
+Java 21；Spring Boot 4.0.8；Spring AI 2.0.1；Temporal BOM/SDK/testing 1.38.0。
 具体版本以根 POM 为准；本轮构建与运行结果在 TODO 中维护。
 AgentPermit 使用 `.mvn/agentpermit.lock.json` 固定公开源码和 SHA-256，并显式构建到项目隔离的 Maven 仓库。
 测试使用 Temporal TestWorkflowEnvironment；跨进程恢复单独用 PostgreSQL-backed Temporal 验证。
@@ -136,4 +148,6 @@ AgentPermit 使用 `.mvn/agentpermit.lock.json` 固定公开源码和 SHA-256，
 - [Activity 幂等与重试](https://docs.temporal.io/activity-definition)
 - [审批等待](https://docs.temporal.io/design-patterns/approval)
 - [Java 测试与回放](https://docs.temporal.io/develop/java/best-practices/testing-suite)
+- [Spring AI 与 Spring Boot 兼容范围](https://docs.spring.io/spring-ai/reference/getting-started.html)
+- [Spring AI OpenAI Chat](https://docs.spring.io/spring-ai/reference/api/chat/openai-chat.html)
 - [官方 PostgreSQL Compose](https://github.com/temporalio/samples-server/tree/main/compose)

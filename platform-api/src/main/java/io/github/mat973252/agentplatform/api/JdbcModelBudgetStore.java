@@ -3,6 +3,7 @@ package io.github.mat973252.agentplatform.api;
 import io.github.mat973252.agentplatform.core.BudgetContext;
 import io.github.mat973252.agentplatform.core.BudgetSnapshot;
 import io.github.mat973252.agentplatform.core.ModelUsage;
+import io.github.mat973252.agentplatform.core.ModelProfile;
 import io.github.mat973252.agentplatform.core.RunBudget;
 import java.time.Clock;
 import javax.sql.DataSource;
@@ -11,6 +12,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.json.JsonMapper;
 
 final class JdbcModelBudgetStore {
   record Permit(boolean acquired, String output) {}
@@ -19,11 +21,16 @@ final class JdbcModelBudgetStore {
   private final JdbcTemplate jdbc;
   private final TransactionTemplate transaction;
   private final Clock clock;
+  private static final JsonMapper JSON = JsonMapper.builder().build();
   private static final RowMapper<BudgetSnapshot> ROW = (rs, row) -> new BudgetSnapshot(rs.getString("run_id"),
       new RunBudget(rs.getInt("max_model_steps"), rs.getInt("max_duration_seconds"), rs.getLong("max_tokens"),
           rs.getLong("max_cost_microusd")), rs.getLong("deadline"), rs.getLong("used_tokens"),
       rs.getLong("reserved_tokens"), rs.getLong("used_cost_microusd"), rs.getLong("reserved_cost_microusd"),
-      rs.getLong("model_attempts"), "OFFLINE_SIMULATED");
+      rs.getLong("model_attempts"), profile(rs.getString("model_profile")).meteringMode(), profile(rs.getString("model_profile")));
+
+  private static ModelProfile profile(String json) {
+    return json == null ? ModelProfile.offline() : JSON.readValue(json, ModelProfile.class);
+  }
 
   JdbcModelBudgetStore(DataSource source, Clock clock) {
     jdbc = new JdbcTemplate(source);
@@ -35,10 +42,10 @@ final class JdbcModelBudgetStore {
     try {
       var limits = context.limits();
       jdbc.update("""
-          INSERT INTO platform_run_budgets(run_id,max_model_steps,max_duration_seconds,max_tokens,max_cost_microusd,deadline)
-          VALUES (?,?,?,?,?,?)
+          INSERT INTO platform_run_budgets(run_id,max_model_steps,max_duration_seconds,max_tokens,max_cost_microusd,deadline,model_profile)
+          VALUES (?,?,?,?,?,?,?)
           """, context.runId(), limits.maxModelSteps(), limits.maxDurationSeconds(), limits.maxTokens(),
-          limits.maxCostMicrousd(), context.deadlineEpochMillis());
+          limits.maxCostMicrousd(), context.deadlineEpochMillis(), JSON.writeValueAsString(context.model()));
     } catch (DuplicateKeyException existing) { /* The original budget must remain unchanged. */ }
     var snapshot = get(context.runId());
     requireBinding(snapshot, context);
@@ -121,7 +128,8 @@ final class JdbcModelBudgetStore {
   }
 
   private void requireBinding(BudgetSnapshot budget, BudgetContext context) {
-    if (!budget.limits().equals(context.limits()) || budget.deadlineEpochMillis() != context.deadlineEpochMillis()) {
+    if (!budget.limits().equals(context.limits()) || budget.deadlineEpochMillis() != context.deadlineEpochMillis()
+        || !budget.model().equals(context.model())) {
       throw new BudgetViolation("BUDGET_BINDING_MISMATCH");
     }
   }

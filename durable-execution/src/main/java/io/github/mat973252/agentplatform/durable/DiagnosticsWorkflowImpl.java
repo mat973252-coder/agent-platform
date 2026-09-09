@@ -69,7 +69,8 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
     operationId = runId + ":restart:1";
     try {
       if (Workflow.getVersion("run-budget-v1", Workflow.DEFAULT_VERSION, 1) != Workflow.DEFAULT_VERSION) {
-        budget = new BudgetContext(runId, request.budget(), Workflow.currentTimeMillis() + request.budget().maxDurationSeconds() * 1000L);
+        budget = new BudgetContext(runId, request.budget(), Workflow.currentTimeMillis() + request.budget().maxDurationSeconds() * 1000L,
+            request.model());
         budgetActivities().initializeBudget(budget);
       }
       return executeSteps();
@@ -133,7 +134,8 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
       modelSteps = step;
       try {
         var context = new AgentContext(runId + ":model:" + step, request.service(),
-            evidence, runbook, observation, writeCompleted, verified);
+            evidence, runbook, observation, writeCompleted, verified, request.model().model(), request.model().promptVersion(),
+            AgentContext.TOOL_VERSION, AgentContext.RUNBOOK_VERSION);
         lastDecision = budget == null ? agentActivities.plan(context) : budgetActivities().planWithinBudget(context, budget);
       } catch (ActivityFailure failure) { return agentFailure(failure, "MODEL_FAILED"); }
       requireTime();
@@ -203,7 +205,8 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
     String type = failure.getCause() instanceof ApplicationFailure application ? application.getType() : fallback;
     if (budgetTimeout(failure) || type.equals("RUN_TIME_BUDGET_EXCEEDED")) return timeBudgetEnd();
     return failAgent(Set.of("MODEL_OUTPUT_INVALID", "TOKEN_BUDGET_EXCEEDED", "COST_BUDGET_EXCEEDED",
-        "MODEL_ATTEMPT_UNCONFIRMED", "MODEL_USAGE_EXCEEDS_ALLOWANCE", "AGENT_VERSION_UNSUPPORTED").contains(type) ? type : fallback);
+        "MODEL_ATTEMPT_UNCONFIRMED", "MODEL_USAGE_EXCEEDS_ALLOWANCE", "AGENT_VERSION_UNSUPPORTED", "MODEL_USAGE_UNKNOWN",
+        "MODEL_CONFIGURATION_UNAVAILABLE", "MODEL_INPUT_TOO_LARGE", "MODEL_REQUEST_REJECTED").contains(type) ? type : fallback);
   }
 
   private DiagnosticsActivities toolActivities() {
@@ -215,15 +218,20 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
   }
 
   private BudgetActivities budgetActivities() {
-    return Workflow.newActivityStub(BudgetActivities.class, remainingOptions());
+    return Workflow.newActivityStub(BudgetActivities.class, remainingOptions(request.model().remote()));
   }
 
   private ActivityOptions remainingOptions() {
+    return remainingOptions(false);
+  }
+
+  private ActivityOptions remainingOptions(boolean remoteModel) {
     requireTime();
     long remaining = budget.deadlineEpochMillis() - Workflow.currentTimeMillis();
-    activityLimitedByBudget = remaining <= 45000;
-    remaining = Math.min(45000, remaining);
-    return ActivityOptions.newBuilder().setStartToCloseTimeout(Duration.ofMillis(Math.min(10000, remaining)))
+    long total = remoteModel ? 150000 : 45000;
+    activityLimitedByBudget = remaining <= total;
+    remaining = Math.min(total, remaining);
+    return ActivityOptions.newBuilder().setStartToCloseTimeout(Duration.ofMillis(Math.min(remoteModel ? 45000 : 10000, remaining)))
         .setScheduleToCloseTimeout(Duration.ofMillis(remaining))
         .setRetryOptions(RetryOptions.newBuilder().setInitialInterval(Duration.ofSeconds(1))
             .setMaximumInterval(Duration.ofSeconds(5)).setMaximumAttempts(3).build()).build();
@@ -337,7 +345,7 @@ public class DiagnosticsWorkflowImpl implements DiagnosticsWorkflow {
   public RunSnapshot snapshot() {
     return new RunSnapshot(runId, state, request == null ? null : request.service(),
         approvalId, operationId, evidence, output, reasonCode,
-        agentLoop ? new AgentProgress(modelSteps, AgentContext.MODEL_VERSION, AgentContext.PROMPT_VERSION,
+        agentLoop ? new AgentProgress(modelSteps, request.model().model(), request.model().promptVersion(),
             AgentContext.TOOL_VERSION, AgentContext.RUNBOOK_VERSION, lastDecision, observation, conclusion, budget) : null);
   }
 }
