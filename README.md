@@ -4,7 +4,7 @@
 
 Java + Temporal 的持久化 Agent 执行基础项目。
 
-**当前阶段：P2 Agent 循环、持久预算与 Spring AI 接入，验收记录见 TODO。** 新 Run 执行受步骤、总时间及 token/cost 限额约束的“规划 → 工具 → 核验 → 结论”循环。默认使用离线 fixture，也可显式配置 OpenAI-compatible Chat Completions 服务。重启仍通过真实 AgentPermit4j 管线、持久审批和数据库测试账本；它不重启真实服务。远端 token 来自服务报告，费用按配置单价估算，未接供应商账单、生产业务工具或生产身份系统。
+**当前阶段：P3 首批 Run/Step 查询投影、模型尝试查询与 SSE 事件续传，验收记录见 TODO。** 新 Run 执行受步骤、总时间及 token/cost 限额约束的“规划 → 工具 → 核验 → 结论”循环。默认使用离线 fixture，也可显式配置 OpenAI-compatible Chat Completions 服务。重启仍通过真实 AgentPermit4j 管线、持久审批和数据库测试账本；它不重启真实服务。远端 token 来自服务报告，费用按配置单价估算，未接供应商账单、生产业务工具或生产身份系统。
 
 ## 技术与结构
 
@@ -84,7 +84,11 @@ Invoke-RestMethod -Uri "http://127.0.0.1:9090$($run.statusUrl)" -Headers $operat
 | API | 结果 |
 |---|---|
 | `POST /api/runs` | 202；返回稳定 runId 与状态地址 |
+| `GET /api/runs?limit=20&pageToken=` | Temporal Visibility 任务列表；返回 `runs`、`nextPageToken`，空 token 表示结束；列表可能有可见性延迟 |
 | `GET /api/runs/{runId}` | 当前状态、合成证据、审批 ID、操作 ID、工具结果及 `agent` 规划进度/版本/核验观察/结论 |
+| `GET /api/runs/{runId}/history` | 刷新并持久保存历史元数据，返回 Run、Activity Step、模型预算尝试；`refresh=false` 只读已保存的 Run/Step 投影 |
+| `GET /api/runs/{runId}/events?after=&limit=100` | 持久事件分页；返回 `events`、`nextCursor`、`highWatermark`、`hasMore`、`closed` |
+| `GET /api/runs/{runId}/events/stream` | SSE；支持 `Last-Event-ID` 或 `after`，恢复游标之后的历史元数据事件 |
 | `GET /api/runs/{runId}/budget` | 固定限额、截止时间、已用/预留 token 与 cost、模型尝试次数、计量模式；未初始化或旧 Run 无预算时 404 |
 | `GET /api/runs/{runId}/approval` | 原始绑定、指纹、过期时间、决定与审批/取消人 |
 | `GET /api/runs/pending-approvals` | 最早到期的最多 100 个待审批记录，重复查询不创建新审批单 |
@@ -98,6 +102,20 @@ Invoke-RestMethod -Uri "http://127.0.0.1:9090$($run.statusUrl)" -Headers $operat
 所有写请求发送 `X-Platform-Request: true`，服务不开放 CORS；启用浏览器前端时须重新设计 CSRF 边界。本机 Basic 账户只是当前身份集成，生产环境仍需 TLS、正式身份源和资源权限模型。
 
 查询中的 `reasonCode` 表示最近一次工具治理决定的原因。策略拒绝为 `DENIED`，用户拒绝为 `REJECTED`。允许/拒绝/失败分支使用离线 fixture 验证；当前 API 的固定重启策略始终要求审批，不提供调用方切换策略的参数。
+
+## 任务历史与事件续传
+
+`/history` 和 `/events` 在请求时从 Temporal 读取完整历史，使用独立业务表保存可重建的元数据投影；不会执行 Activity、重跑模型或发送工作流消息。Run 创建、审批和工具执行不依赖这些投影表。查询表不可用时观测接口返回 503，原执行链路仍照常运行；这不表示共享业务数据库整体不可用时审批/预算仍可写入。
+
+`run.executionStatus` 来自 Temporal，例如 `RUNNING`、`COMPLETED`；`businessState` 和 `reasonCode` 只从已返回的业务结果提取，运行中为 null，实时业务状态仍通过原 `/api/runs/{runId}` 查询。`COMPLETED` 不能直接当作业务成功。`projectedAt` 表示 Run/Step 最近一次历史投影时间；`refresh=false` 不访问 Temporal，但模型尝试仍从当前预算表读取，可能比缓存的 Run/Step 更新。
+
+Step 对应一次 Temporal Activity 调度，以 `scheduledEventId` 和 `activityId` 关联历史。模型 Activity 另带稳定 `decisionId`。`lastRecordedAttempt` 只表示历史可见的最终尝试序号，未上报时为 null；[Temporal 不记录中间每次重试的独立历史事件](https://github.com/temporalio/documentation/blob/main/docs/encyclopedia/application-failures.mdx)。`modelAttempts` 单独来自预算表，`RESERVED/UNKNOWN` 的 null 用量不表示零消费，`meteringMode` 明确区分合成用量与配置费用估算。
+
+事件 ID 为 `<Temporal executionId>:<eventId>`，按单个执行历史递增。断线客户端保存最后消费成功的 SSE `id`，重连时通过 `Last-Event-ID` 发送；重复传输由客户端按 ID 去重。SSE 每秒检查新历史，空闲发送 heartbeat，约 25 秒主动结束供客户端重连，终态且事件发完时提前结束。每个应用最多 32 条流，超出返回 429；它不是模型 token 流。浏览器原生 EventSource 不能自定义 Basic Authorization，请使用可设置请求头的客户端，不把凭据放进 URL。
+
+列表和事件页 `limit` 范围 1–500。游标必须属于当前 execution，超前、格式错误或冲突的游标返回 400；执行绑定变化返回 409，不把新执行拼到旧流中。当前上限为每 Run 10000 个历史事件，超出返回 422，不截断推进游标；Continue-As-New 尚未支持。投影缺失/损坏时重新 GET 可在 Temporal 历史保留期内修复，事件 ID 不变。没有后台全量归档或自动清理，历史过期后不能从 Temporal 重建；已有 Run/Step 投影仍可用 `refresh=false` 读取。正式保留策略、Artifact、trace/metrics 和管理台在后续 P3 实现。
+
+新增投影和 SSE 仅保存时间、状态、受控标识及关联关系，不复制 evidence、runbook、模型原文、异常正文、Worker identity 或凭据。原始 Temporal 历史、预算决策缓存及原审批/操作 API 的保留与权限边界未因此改变。
 
 ## 离线 Agent 循环
 
@@ -153,6 +171,8 @@ python scripts/smoke.py --restart-approval-db
 
 日志写入忽略的 `var/smoke.log`。脚本也检查等待期间已记录的模型决策和预算跨 Worker 重启不变，以及恢复后三个模型步骤的结算。另在模型响应落账前强制终止进程，验证未知预留跨进程保留、新尝试单独计量。此验收与内存工作流测试分开，GitHub Actions 也会运行它。实际执行记录见 TODO。
 
+P3 smoke 增加持久查询投影、真实 Visibility 列表分页和 SSE 游标补齐检查；`--restart-approval-db` 还会仅删除该次 smoke 自建 UUID Run 的观测投影，再从历史重建并比较事件 ID，不删除其审批、预算、执行记录或账本。
+
 2026-09-06 已在 [GitHub CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34025622000) 通过 PostgreSQL + Temporal 的 Worker 强制终止/恢复验收，并验证拒绝、取消、超时和重复请求保护。本机 Windows 的 Docker 引擎启动故障使本地容器联调尚未完成；Windows 本地 Maven 测试已通过。
 
 2026-09-07 的 [P1.1 CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34049953194) 已验证全新环境构建固定 AgentPermit 源码，并再次通过治理接入后的相同恢复验收。
@@ -180,7 +200,7 @@ python scripts/smoke.py --restart-approval-db
 - `Workflow.getVersion` 保留升级前命令序列，12 份固定旧历史参与回放。未带预算的旧 Run 不插入预算步骤，P1.3 旧 Run 不插入模型步骤，P1.2 旧 Run 不自动获得新的持久副作用保证。P0/P1.1 尚未决定的 Run 没有可信审批记录，应取消并用新 requestId 重建。
 - API、Temporal gRPC 与 UI 仅绑定 loopback；当前 Compose 是开发演示配置。
 - 取消不会回滚已经完成的外部操作。
-- 当前业务库保存审批、执行结果、预算与模型 profile，不是完整 Run/Step 查询视图；RAG、管理前端、SSE、Sandbox 和多 Runtime 在 TODO 分阶段列明。
+- 当前业务库保存审批、执行结果、预算、模型 profile 以及按需更新的历史元数据查询投影；未实现全量 Activity 尝试审计、Artifact 存储或观测平台。RAG、管理前端、Sandbox 和多 Runtime 在 TODO 分阶段列明。
 - 原始平台规划描述最终愿景，不是当前能力清单。
 
 ## License

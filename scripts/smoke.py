@@ -64,6 +64,51 @@ def assert_budget_complete(base, run_id, held=0, attempts=3):
     assert value["reservedCostMicrousd"] == (5000 if held else 0)
 
 
+def assert_event_resume(base, run_id, cursor, final_event_id):
+    credentials = "approver:" + os.environ["PLATFORM_APPROVER_PASSWORD"]
+    req = urllib.request.Request(base + f"/api/runs/{run_id}/events/stream",
+                                 headers={"Last-Event-ID": cursor,
+                                          "Authorization": "Basic " + base64.b64encode(credentials.encode()).decode()})
+    with urllib.request.urlopen(req, timeout=15) as response:
+        assert response.headers["Content-Type"].startswith("text/event-stream")
+        lines = response.read().decode().splitlines()
+    prefix, after = cursor.rsplit(":", 1)
+    ids = [line[3:].strip() for line in lines if line.startswith("id:")]
+    assert ids == [f"{prefix}:{number}" for number in range(int(after) + 1, final_event_id + 1)]
+
+
+def assert_run_listing(base, expected):
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        found, token, seen_tokens = set(), "", set()
+        for _ in range(100):
+            page = request(base, "GET", "/api/runs?limit=2&pageToken=" + token)
+            ids = {run["runId"] for run in page["runs"]}
+            assert not found.intersection(ids), "Run pagination repeated an execution"
+            found.update(ids)
+            token = page["nextPageToken"]
+            if not token:
+                break
+            assert token not in seen_tokens, "Run pagination did not advance"
+            seen_tokens.add(token)
+        if expected.issubset(found):
+            return
+        time.sleep(0.2)
+    raise AssertionError("Temporal visibility did not expose the smoke Runs")
+
+
+def rebuild_projection(root, base, run_id):
+    # Delete only the read model for this smoke-created UUID, never its execution or business ledger.
+    assert str(uuid.UUID(run_id.removeprefix("run-"))) == run_id.removeprefix("run-")
+    before = request(base, "GET", f"/api/runs/{run_id}/events?limit=500")
+    statements = [f"DELETE FROM {table} WHERE run_id='{run_id}'" for table in
+                  ("platform_run_events", "platform_run_steps", "platform_run_views")]
+    subprocess.run(["docker", "compose", "exec", "-T", "approval-db", "psql", "-U", "agent_platform",
+                    "-d", "agent_platform", "-v", "ON_ERROR_STOP=1", "-c",
+                    "BEGIN; " + "; ".join(statements) + "; COMMIT;"], cwd=root, check=True, capture_output=True)
+    assert request(base, "GET", f"/api/runs/{run_id}/events?limit=500") == before
+
+
 def start(jar, port, output, delivery=True, failure_mode="NONE", model_failure_mode="NONE"):
     process = subprocess.Popen(
         ["java", "-jar", str(jar), f"--server.port={port}",
@@ -133,6 +178,10 @@ def main():
             pending_budget = budget(base, run_id)
             assert pending_budget["usedTokens"] == 928 and pending_budget["reservedTokens"] == 0
             assert pending_budget["modelAttempts"] == 1
+            pending_history = request(base, "GET", f"/api/runs/{run_id}/history")
+            pending_events = request(base, "GET", f"/api/runs/{run_id}/events?limit=500")
+            # /events refreshes projectedAt; retain the exact stored view for the restart assertion.
+            pending_history = request(base, "GET", f"/api/runs/{run_id}/history?refresh=false")
             approval_path = f"/api/runs/{run_id}/approval"
             original_record = request(base, "GET", approval_path)
             assert original_record["status"] == "PENDING"
@@ -145,6 +194,8 @@ def main():
             assert recovered == pending, "Persisted Run changed across Worker restart"
             assert budget(base, run_id) == pending_budget
             assert request(base, "GET", approval_path) == original_record
+            cached_history = request(base, "GET", f"/api/runs/{run_id}/history?refresh=false")
+            assert cached_history["run"] == pending_history["run"] and cached_history["steps"] == pending_history["steps"]
             decision = {"approvalId": pending["approvalId"], "decision": "APPROVE"}
             request(base, "POST", approval_path, decision, 403, actor="operator")
             request(base, "POST", approval_path, decision, 202)
@@ -158,6 +209,8 @@ def main():
                 subprocess.run(["docker", "compose", "restart", "approval-db"], cwd=root, check=True)
                 subprocess.run(["docker", "compose", "up", "-d", "--wait", "approval-db"], cwd=root, check=True)
             process = start(jar, args.port, output)
+            cached_history = request(base, "GET", f"/api/runs/{run_id}/history?refresh=false")
+            assert cached_history["run"] == pending_history["run"] and cached_history["steps"] == pending_history["steps"]
             complete = await_state(base, run_id, "SUCCEEDED")
             assert_agent_complete(complete)
             assert_budget_complete(base, run_id)
@@ -168,6 +221,17 @@ def main():
             assert completed_record == dict(saved_decision, executionStarted=True)
             request(base, "POST", approval_path, decision, 202)
             request(base, "POST", "/api/runs", payload, 409)
+            final_history = request(base, "GET", f"/api/runs/{run_id}/history")
+            assert final_history["run"]["businessState"] == "SUCCEEDED"
+            assert len(final_history["modelAttempts"]) == 3
+            assert all(attempt["meteringMode"] == "OFFLINE_SIMULATED" for attempt in final_history["modelAttempts"])
+            final_events = request(base, "GET", f"/api/runs/{run_id}/events?limit=500")
+            assert final_events["events"][:len(pending_events["events"])] == pending_events["events"]
+            assert_event_resume(base, run_id, pending_events["nextCursor"], final_events["highWatermark"])
+            if args.restart_approval_db:
+                rebuild_projection(root, base, run_id)
+            print(f"PASS durable history/SSE: {run_id}; resumed after {pending_events['nextCursor']}; "
+                  f"final event {final_events['highWatermark']}; stable IDs and projection rebuild", flush=True)
             print(f"PASS restart recovery: {run_id}; Worker {first_pid} -> {process.pid}", flush=True)
             print("PASS persistent approval, authenticated actor, duplicate decision and outbox recovery"
                   + (" with PostgreSQL restart" if args.restart_approval_db else ""), flush=True)
@@ -184,6 +248,8 @@ def main():
             expired, _ = create(base, seconds=2)
             assert await_state(base, expired, "TIMED_OUT")["output"] is None
             print("PASS rejection, cancellation, approval timeout and duplicate Run protection", flush=True)
+            assert_run_listing(base, {run_id, rejected, cancelled, expired})
+            print("PASS Temporal visibility Run listing with pagination", flush=True)
 
             process.kill()
             process.wait(timeout=15)
@@ -277,6 +343,10 @@ def main():
             assert recovered_budget["reservedTokens"] == 2560 and recovered_budget["usedTokens"] == 928
             assert recovered_budget["modelAttempts"] == 2
             assert recovered_budget["deadlineEpochMillis"] == reserved["deadlineEpochMillis"]
+            attempts = request(base, "GET", f"/api/runs/{lost_response}/history")["modelAttempts"]
+            assert len(attempts) == 2 and attempts[0]["attempt"] == 1 and attempts[1]["attempt"] == 2
+            assert attempts[0]["status"] == "RESERVED" and attempts[0]["usedTokens"] is None
+            assert attempts[1]["status"] == "COMPLETED" and attempts[1]["usedTokens"] == 928
             request(base, "POST", f"/api/runs/{lost_response}/approval",
                     {"approvalId": approval["approvalId"], "decision": "APPROVE"}, 202)
             assert_agent_complete(await_state(base, lost_response, "SUCCEEDED"))

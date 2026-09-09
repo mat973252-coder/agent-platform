@@ -5,6 +5,7 @@
 当前实现单个诊断任务的可恢复执行流程，使用固定合成证据和数据库测试账本。
 P1.1 加入 AgentPermit4j 适配，P1.2 加入独立持久审批和本机账户身份验证，P1.3 加入持久执行权、结果复用和未知结果核验。测试账本具有真实数据库写入，但不重启真实服务；生产身份源和生产业务工具仍在后续阶段，见根目录 TODO。
 P2 增加严格决策契约、有限 Agent 循环与持久预算，并通过 Spring AI 接入显式配置的 OpenAI-compatible Chat Completions 服务。默认保留离线 fixture；真实请求的 token 来自服务报告，cost 按冻结的参考价格估算。
+P3 首批增加外部只读历史投影与 SSE 传输，不修改 Workflow 命令序列或为观测增加执行 Activity。
 
 ## 模块
 
@@ -20,7 +21,7 @@ durable-execution 与 agentpermit-adapter 都依赖 core，彼此不依赖；由
 
 Workflow 与 Activity 位于应用 Worker；Temporal Server 是独立服务。
 Temporal 使用 PostgreSQL 保存内部执行数据，应用不得直接修改内部表。
-审批、执行记录与受控测试账本使用独立 PostgreSQL 数据库和 Flyway 迁移，只访问业务表。未来 Run/Step 查询视图也不承担执行调度职责。
+审批、执行记录、受控测试账本与 Run/Step 投影使用独立 PostgreSQL 数据库和 Flyway 迁移，只访问业务表。查询投影不承担执行调度职责。
 
 ## 首个流程
 
@@ -110,7 +111,25 @@ API 使用显式配置的本机 Basic 账户：operator 创建/查询/取消/核
 
 CI 使用本机 HTTP mock 验证协议、500/断连接不隐藏重试、usage 缺失、端点绑定及完整审批/核验流程，不调用付费模型。`scripts/smoke-model.py` 是显式真实服务验收入口；它复用本机 dotenv 或环境，只发送合成诊断数据，以 H2 和内存 Temporal 承载流程。真实模型请求与 PostgreSQL 跨进程恢复是两套独立证据，不混称为同一次生产联调。
 
-模型/提示词/工具/runbook 版本随 Activity 输入持久记录，并在 `agent` 查询字段展示。版本升级必须保留旧内容和兼容分支，不能用同一版本覆盖 fixture。完整步骤查询视图和模型供应商适配后续实现。
+模型/提示词/工具/runbook 版本随 Activity 输入持久记录，并在 `agent` 查询字段展示。版本升级必须保留旧内容和兼容分支，不能用同一版本覆盖 fixture。P3 将 Activity 调度映射为查询 Step；更多模型供应商适配后续实现。
+
+## P3 历史查询投影与 SSE
+
+`RunObservationService` 通过 Temporal public API 读取 DiagnosticsWorkflow 历史，`RunHistoryProjection` 只保留元数据，`JdbcRunProjectionStore` 写入 V5 的 `platform_run_views`、`platform_run_steps` 和 `platform_run_events`。没有 Workflow/Activity→观测存储调用，创建、审批、执行也不读取投影。模型尝试只读 V3/V4 预算表，仍由原预算路径负责真实请求预留和结算；不能把这个预算执行依赖误称为可丢弃的观测数据。
+
+查询时按需刷新，无后台扫描或新调度器。任务列表使用 Temporal Visibility 分页，可能暂时滞后；历史详情使用 Describe 确定 execution ID，再读取该 execution 的完整历史，不依赖在线 Worker。每次投影要求从 event 1 连续开始；超过 10000 事件拒绝，不写入截断快照。Run 输入目前禁止复用 ID，没有 Continue-As-New；不同 execution 不能覆盖原绑定。
+
+Run 的 `executionStatus` 来自历史终止事件，`businessState/reasonCode` 从完成结果提取白名单字段；Workflow 正常返回 FAILED 时 execution 仍为 COMPLETED。活动中的业务状态留给原 Workflow query，不通过观测侧另建状态机。Step 是一次 `ActivityTaskScheduled`，ID 为该 schedule event ID，关联 `activityId/activityType`，模型另带稳定 `decisionId`；它不同于模型循环中的业务步数。
+
+Temporal 只在 Activity 关闭时写入最终 Started/终止事件，中间重试通常没有独立记录。Step 的 `lastRecordedAttempt` 及事件的 `attempt` 只使用 Started 属性，缺失为 null，不伪造 1..N 次记录或逐次耗时。完整的模型请求尝试来自预算行，具有自己的 RESERVED/UNKNOWN/COMPLETED、预留时间、结算时间、usage 和计量模式；未知用量为 null，不计作零。二者标注不同来源，不能相加作为物理请求次数。
+
+写投影时锁定父 Run 行，校验 execution 绑定并阻止 event watermark 回退；替换事件/步骤与推进 watermark 在同一事务中完成。重复刷新不产生新事件 ID；同一次刷新也能修复缺失或损坏的投影。`refresh=false` 的详情只读取已保存 Run/Step，并显式暴露 `projectedAt`；modelAttempts 仍是预算表当前读值。它们不是跨 Temporal/业务库的同一分布式事务快照。观测表不可用返回脱敏 503；不影响既有执行决定，但共享数据库失效仍会影响原审批/预算/工具持久约束。
+
+事件 ID 为 `executionId:eventId`，游标独占下界。事件分页按 event ID 升序，返回 highWatermark 与 hasMore；只返回不超过本次已见 watermark 的事件。SSE 复用同一事件 API，不生成第二套事件序列，不保存浏览器会话状态。Last-Event-ID 与 after 冲突、跨执行、超前或非法游标返回 400。客户端按成功消费的 ID 保存游标并去重；断线不确认未消费事件。
+
+SSE 每秒轮询，约 25 秒关闭连接让客户端重连，终态且无剩余事件提前结束。应用最多允许 32 条流，超出 429；客户端断开、超时、异常或应用关闭均结束后台任务并释放配额。数据只含元数据，不是 LLM token stream。已建立流期间观测异常会关闭连接，不发送异常正文或推进游标，客户端稍后按原游标重试。原 GET 的 operator/approver 权限、Basic 认证、无 CORS 和 no-store 适用于这些接口。
+
+观测投影不复制证据、模型输入输出、异常堆栈、Worker identity 或凭据；只从模型上下文提取经过当前 Run 前缀校验的 decision ID，从完成结果提取枚举业务状态和限定格式原因码。原 Temporal 历史和预算结果缓存仍按原设计保存 Activity payload。当前没有自动保留/清理策略；在 Temporal 历史过期前可重建，过期后不能靠投影恢复执行，已有 Run/Step 仅可显式只读查询。Artifact、trace、指标、管理台和正式保留策略仍为后续任务。
 
 ## 持久执行与未知结果
 
