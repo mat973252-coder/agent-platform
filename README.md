@@ -165,6 +165,8 @@ python scripts/smoke.py --restart-approval-db
 
 2026-09-09 的 [预算 CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34250825483) 已通过 117 项项目测试和全部 PostgreSQL + Temporal smoke。模型响应后进程退出，恢复时原尝试保留预留额度，新尝试单独计量；审批数据库重启不重置预算或 deadline。当前计量仍是离线合成单位。
 
+同日的 [Spring AI CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34293091866) 已通过 128 项项目测试和全部恢复 smoke，包括 Spring AI 实际 SDK 与本地 HTTP mock 的完整审批/核验流程；CI 没有调用付费模型。自建模型真实网络验收单独记录在上方。
+
 ## 当前保证与限制
 
 - Temporal 恢复已记录的执行结果；Activity 在完成结果尚未上报时仍可能重试。

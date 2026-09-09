@@ -123,7 +123,9 @@ Spring AI 实现（2026-09-09）：使用 2.0.1 与官方 SDK 4.49.0，关闭 SD
 
 真实模型验收（2026-09-09）：`scripts/smoke-model.py` 复用已有本机配置，对自建 OpenAI-compatible 服务的 `claude-sonnet-4-6` 完成一次完整规划/审批/测试账本写入/核验/结论流程；Run `run-ffeff979-0405-464b-aeb8-42336348955d`，3 次实际模型请求，服务报告 2227 token，参考费用 9489 microUSD，零剩余预留，并回放历史。参考单价为每百万输入 USD 3、输出 USD 15，版本 `sonnet-reference-2026-09-09`；这是估算，不是网关账单，也不独立证明上游模型路由。此项为真实网络请求 + 内存 Temporal/H2，生产服务工具和 PostgreSQL 跨进程真实模型恢复未计为验收。
 
-Spring AI 本地回归（2026-09-09）：Maven `verify` 128 项通过（core 14、adapter 28、Workflow 38、固定旧历史 12、API/模型/预算/投递 36）。新增测试覆盖旧输入与旧预算行保持离线、profile 恢复绑定、实际 HTTP 请求输出上限、500 和断连接无隐藏重试、缺失 usage 不当零、端点漂移不发送凭据、错误正文不进入异常、服务用量结算及缓存重试，以及 HTTP mock 下的完整审批/核验流程。Python 脚本语法与 `git diff --check` 通过。最终 CI 结果待补录；CI 保持只使用 fixture 和本地 HTTP mock。
+Spring AI 本地回归（2026-09-09）：Maven `verify` 128 项通过（core 14、adapter 28、Workflow 38、固定旧历史 12、API/模型/预算/投递 36）。新增测试覆盖旧输入与旧预算行保持离线、profile 恢复绑定、实际 HTTP 请求输出上限、500 和断连接无隐藏重试、缺失 usage 不当零、端点漂移不发送凭据、错误正文不进入异常、服务用量结算及缓存重试，以及 HTTP mock 下的完整审批/核验流程。Python 脚本语法与 `git diff --check` 通过。
+
+Spring AI CI（2026-09-09）：[GitHub Actions](https://github.com/mat973252-coder/agent-platform/actions/runs/34293091866) 对功能提交 `ffd51e1c3cc3ec4141446fc6b8833391a54d08e7` 的上游 113 项、项目 128 项测试及全部 PostgreSQL + Temporal smoke 通过。HTTP mock Run 完成三次模型请求并结算 3300 token / 13500 microUSD；等待审批的 `run-d79f1431-02b6-412a-bc05-84d7712d724f` 经 Worker `5753 → 6653` 和审批 PostgreSQL 重启恢复。账本提交后的 `run-b54e656a-06e8-43ed-9f0b-85677650a873` 经 Worker `6996 → 7276` 保持只有一次写入；离线模型响应中断后的 `run-593a7b0b-05a9-476c-a2c9-15064a0e286e` 经 Worker `8255 → 8472` 保留未知预算占用。CI 只使用 fixture 和本地 HTTP mock，不包含付费模型调用；真实模型网络验收见上，二者分别报告。
 
 预算实现（2026-09-09）：服务端冻结 6 步/900 秒/100000 token/1000000 microUSD 的默认限额，审批等待、Activity 重试及退避包含在总时限内。每次模型请求事务预留，成功结算与决策缓存同事务；未知响应保留全额预留，重试必须另有额度。新增只读 `/budget` 查询，原 P2 历史通过版本分支兼容。超时后仅保留未知写的只读核验/人工关闭，不能回滚已开始操作。计量模式固定 `OFFLINE_SIMULATED`，不是供应商账单。
 
