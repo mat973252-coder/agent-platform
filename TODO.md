@@ -1,6 +1,6 @@
 # Agent Platform 实施清单
 
-> 状态日期：2026-09-09。P0、P1、P2 已交付，P3 正在验收首批查询投影与事件 SSE；Artifact、trace/metrics 和管理台尚未实现。P2 真实模型调用已通过，费用为配置估算，供应商账单未接入。
+> 状态日期：2026-09-09。P0、P1、P2 已交付，P3 首批查询投影与事件 SSE 已通过容器验收；Artifact、trace/metrics 和管理台尚未实现。P2 真实模型调用已通过，费用为配置估算，供应商账单未接入。
 > 技术栈：Java 21、Spring Boot 4、Temporal Java SDK、PostgreSQL。
 > 原始完整平台规划保留在 `production-agent-platform-tech-stack-and-core-features.md`；本清单决定实际执行顺序。
 
@@ -139,9 +139,9 @@ Spring AI CI（2026-09-09）：[GitHub Actions](https://github.com/mat973252-cod
 
 ## P3：平台数据与可观测性
 
-- [ ] 建立业务 Run/Step/Attempt 查询视图，明确与 Temporal 历史的映射及修复方式。（本地已实现，容器验收待完成）
-- [ ] 设计事件 ID 与顺序、幂等写入和断线重连游标；SSE 仅负责传输。（本地已实现，容器验收待完成）
-- [ ] PostgreSQL 业务 schema 使用版本化迁移，不与 Temporal 内部表混用。（V5 已实现，容器验收待完成）
+- [x] 建立业务 Run/Step/Attempt 查询视图，明确与 Temporal 历史的映射及修复方式。Step 为 Activity 调度，Attempt 来源边界见下。
+- [x] 设计事件 ID 与顺序、幂等写入和断线重连游标；SSE 仅负责传输。
+- [x] PostgreSQL 业务 schema 使用版本化迁移，不与 Temporal 内部表混用。V5 保存历史元数据投影。
 - [ ] 大结果/Artifact 通过引用存储，控制工作流历史和 payload 大小。
 - [ ] 关联 Run、Activity、工具调用与审批的 trace ID。
 - [ ] 记录成功率、耗时、重试次数、审批等待、工具错误和预算使用。
@@ -153,6 +153,8 @@ Spring AI CI（2026-09-09）：[GitHub Actions](https://github.com/mat973252-cod
 P3 首批范围：通过 public API 按需投影 Temporal 历史，不改变 Workflow/Activity 或原执行依赖。Step 对应 Activity 调度；历史只能提供最终可见 attempt，模型物理请求尝试另从预算表查询，二者不混算。新增任务列表、历史详情、事件分页和 SSE；事件只含元数据，不复制模型/证据/错误正文。SSE 支持 execution 绑定游标、客户端去重、约 25 秒重连和 32 连接上限。投影在历史保留期内可重建，无后台全量归档、Continue-As-New 或自动清理。当前查询视图不计为完整 Activity 尝试审计或完整观测平台。
 
 P3 本地验证（2026-09-09）：先观察缺失投影类型、缺失 HTTP 路由和损坏缓存返回 500 的预期失败，再实现对应行为。Maven `verify` 141 项通过（core 14、adapter 28、Workflow 38、固定旧历史 12、API/模型/投影 49）。新增 13 项覆盖中间重试不伪造、业务失败与 Temporal COMPLETED 区分、元数据脱敏、独立连接竞争、重复/陈旧刷新、缺行和损坏投影重建、execution 绑定、事件分页/SSE 游标、32 连接上限与主动断开释放、观测表故障时原 Run 继续取消和结束。内存 Temporal 的 List RPC 明确返回 UNIMPLEMENTED，列表成功分页由真实容器 smoke 单独验收。Python smoke 语法与 `git diff --check` 通过；本机 Docker 引擎仍不可用，容器验证待 CI。
+
+P3 真实联调（2026-09-09）：[P3 GitHub CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34299312533) 对功能提交 `9328c0eebcbe28f2c5dca77736888382d6938e21` 的上游 113 项、项目 141 项测试及全部 PostgreSQL + Temporal smoke 通过。Run `run-b3c63041-cf11-44ca-b440-22562800f2c5` 的投影跨 Worker `5785 → 6682` 和审批 PostgreSQL 重启保留；SSE 从 execution `01a083c9-7ab9-74aa-bdfe-f80edd673e8b` 的 event 38 续传至 73，删除该 Run 的观测投影后重建仍保持相同事件 ID。真实 Visibility 任务列表分页通过。账本提交后恢复仍只有一次写入；模型响应丢失后查询保留原 RESERVED/未知用量及下一次 COMPLETED 尝试。后续补上 Actions 临时数据库口令的日志掩码；口令仅用于当次 runner 的合成测试容器。P3 后续项未计为完成。
 
 ## P4：升级、故障与回归验证
 

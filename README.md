@@ -187,6 +187,8 @@ P3 smoke 增加持久查询投影、真实 Visibility 列表分页和 SSE 游标
 
 同日的 [Spring AI CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34293091866) 已通过 128 项项目测试和全部恢复 smoke，包括 Spring AI 实际 SDK 与本地 HTTP mock 的完整审批/核验流程；CI 没有调用付费模型。自建模型真实网络验收单独记录在上方。
 
+同日的 [P3 CI](https://github.com/mat973252-coder/agent-platform/actions/runs/34299312533) 已通过 141 项项目测试与全部 PostgreSQL + Temporal smoke。查询投影跨 Worker/数据库重启保留；SSE 从 event 38 续传至 73，删除投影后重建保持相同事件 ID；真实 Visibility 列表分页和原有副作用/预算恢复检查均通过。
+
 ## 当前保证与限制
 
 - Temporal 恢复已记录的执行结果；Activity 在完成结果尚未上报时仍可能重试。
